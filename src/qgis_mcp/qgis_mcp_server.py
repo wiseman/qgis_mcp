@@ -4,15 +4,23 @@ QGIS MCP Client - Simple client to connect to the QGIS MCP server
 """
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 import socket
 import json
 from typing import AsyncIterator, Dict, Any
 from mcp.server.fastmcp import FastMCP, Context
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("QgisMCPServer")
+
+# Simple helper for consistent stderr debugging output
+def _dbg(msg: str):
+    """Write *msg* to stderr with a timestamp, flush immediately."""
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[QGIS-MCP {ts}] {msg}", file=sys.stderr, flush=True)
 
 class QgisMCPServer:
     def __init__(self, host='localhost', port=9876):
@@ -22,24 +30,27 @@ class QgisMCPServer:
     
     def connect(self):
         """Connect to the QGIS MCP server"""
+        _dbg(f"Attempting to connect to QGIS MCP at {self.host}:{self.port}")
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.connect((self.host, self.port))
+            _dbg("TCP connection established")
             return True
         except Exception as e:
-            print(f"Error connecting to server: {str(e)}")
+            _dbg(f"Error connecting to server: {str(e)}")
             return False
     
     def disconnect(self):
         """Disconnect from the server"""
         if self.socket:
+            _dbg("Closing socket connection")
             self.socket.close()
             self.socket = None
     
     def send_command(self, command_type, params=None):
         """Send a command to the server and get the response"""
         if not self.socket:
-            print("Not connected to server")
+            _dbg("Not connected to server – aborting send_command")
             return None
         
         # Create command
@@ -48,30 +59,42 @@ class QgisMCPServer:
             "params": params or {}
         }
         
+        _dbg(f"Sending command: {json.dumps(command)}")
+        
         try:
             # Send the command
             self.socket.sendall(json.dumps(command).encode('utf-8'))
+            _dbg("Command bytes sent – awaiting response…")
             
             # Receive the response
             response_data = b''
             while True:
                 chunk = self.socket.recv(4096)
                 if not chunk:
+                    _dbg("Socket recv returned 0 bytes – remote closed")
                     break
                 response_data += chunk
+                _dbg(f"Received {len(chunk)} bytes (total {len(response_data)})")
                 
                 # Try to decode as JSON to see if it's complete
                 try:
                     json.loads(response_data.decode('utf-8'))
+                    _dbg("Full JSON response received")
                     break  # Valid JSON, we have the full message
                 except json.JSONDecodeError:
                     continue  # Keep receiving
             
             # Parse and return the response
-            return json.loads(response_data.decode('utf-8'))
+            _dbg(f"Response data: {response_data}")
+            response_json = json.loads(response_data.decode('utf-8'))
+            _dbg(f"Response decoded: {response_json}")
+            return response_json
             
         except Exception as e:
-            print(f"Error sending command: {str(e)}")
+            _dbg(f"Error sending command: {str(e)}")
+            # Log stack trace.
+            import traceback
+            _dbg(f"Stack trace: {traceback.format_exc()}")
             return None
 
 _qgis_connection = None
@@ -85,11 +108,12 @@ def get_qgis_connection():
         # Test if the connection is still alive with a simple ping
         try:
             # Just try to send a small message to check if the socket is still connected
-            _qgis_connection.sock.sendall(b'')
+            _dbg("Re-using existing QGIS socket connection")
+            _qgis_connection.socket.sendall(b'')
             return _qgis_connection
         except Exception as e:
             # Connection is dead, close it and create a new one
-            logger.warning(f"Existing connection is no longer valid: {str(e)}")
+            _dbg(f"Existing connection is no longer valid: {str(e)} – reconnecting…")
             try:
                 _qgis_connection.disconnect()
             except Exception:
@@ -98,12 +122,13 @@ def get_qgis_connection():
     
     # Create a new connection if needed
     if _qgis_connection is None:
+        _dbg("Creating new QGIS MCP client instance")
         _qgis_connection = QgisMCPServer(host="localhost", port=9876)
         if not _qgis_connection.connect():
-            logger.error("Failed to connect to Qgis")
+            _dbg("Failed to connect to Qgis")
             _qgis_connection = None
             raise Exception("Could not connect to Qgis. Make sure the Qgis plugin is running.")
-        logger.info("Created new persistent connection to Qgis")
+        _dbg("Created new persistent connection to Qgis")
     
     return _qgis_connection
 
@@ -144,7 +169,7 @@ mcp = FastMCP(
 )
 
 @mcp.tool()
-def ping(ctx: Context) -> str:
+def qgis_ping(ctx: Context) -> str:
     """
     Ping the QGIS MCP plugin to verify that the python client can reach the
     running QGIS instance.
@@ -160,11 +185,13 @@ def ping(ctx: Context) -> str:
         No side-effects.
     """
     qgis = get_qgis_connection()
+    _dbg("Entered tool qgis_ping")
     result = qgis.send_command("ping")
+    _dbg(f"qgis_ping → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def get_qgis_info(ctx: Context) -> str:
+def qgis_get_info(ctx: Context) -> str:
     """
     Retrieve basic information about the active QGIS application.
 
@@ -177,11 +204,13 @@ def get_qgis_info(ctx: Context) -> str:
           • plugins_count  – number of loaded plugins
     """
     qgis = get_qgis_connection()
+    _dbg("Entered tool qgis_get_info")
     result = qgis.send_command("get_qgis_info")
+    _dbg(f"qgis_get_info → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def load_project(ctx: Context, path: str) -> str:
+def qgis_load_project(ctx: Context, path: str) -> str:
     """
     Load an existing QGIS project (.qgs or .qgz) from disk.
 
@@ -201,11 +230,13 @@ def load_project(ctx: Context, path: str) -> str:
     Replaces the currently opened project in QGIS and refreshes the map view.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_load_project(path={path})")
     result = qgis.send_command("load_project", {"path": path})
+    _dbg(f"qgis_load_project → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def create_new_project(ctx: Context, path: str) -> str:
+def qgis_create_new_project(ctx: Context, path: str) -> str:
     """
     Create a brand-new, empty QGIS project and immediately save it to *path*.
 
@@ -225,11 +256,13 @@ def create_new_project(ctx: Context, path: str) -> str:
     Clears any project that is currently open in QGIS.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_create_new_project(path={path})")
     result = qgis.send_command("create_new_project", {"path": path})
+    _dbg(f"qgis_create_new_project → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def get_project_info(ctx: Context) -> str:
+def qgis_get_project_info(ctx: Context) -> str:
     """
     Return a concise summary of the currently open project.
 
@@ -244,11 +277,13 @@ def get_project_info(ctx: Context) -> str:
           • layers – up to ten layer descriptors {id,name,type,visible}
     """
     qgis = get_qgis_connection()
+    _dbg("Entered tool qgis_get_project_info")
     result = qgis.send_command("get_project_info")
+    _dbg(f"qgis_get_project_info → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def add_vector_layer(ctx: Context, path: str, provider: str = "ogr", name: str = None) -> str:
+def qgis_add_vector_layer(ctx: Context, path: str, provider: str = "ogr", name: str = None) -> str:
     """
     Add a vector dataset (Shapefile, GeoJSON, GeoPackage, …) to the project.
 
@@ -271,14 +306,16 @@ def add_vector_layer(ctx: Context, path: str, provider: str = "ogr", name: str =
     Inserts the layer into the current project and triggers a map refresh.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_add_vector_layer(path={path}, provider={provider}, name={name})")
     params = {"path": path, "provider": provider}
     if name:
         params["name"] = name
     result = qgis.send_command("add_vector_layer", params)
+    _dbg(f"qgis_add_vector_layer → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def add_raster_layer(ctx: Context, path: str, provider: str = "gdal", name: str = None) -> str:
+def qgis_add_raster_layer(ctx: Context, path: str, provider: str = "gdal", name: str = None) -> str:
     """
     Add a raster dataset (e.g. GeoTIFF, JPEG2000) to the project.
 
@@ -301,14 +338,16 @@ def add_raster_layer(ctx: Context, path: str, provider: str = "gdal", name: str 
     Adds the raster layer to the project.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_add_raster_layer(path={path}, provider={provider}, name={name})")
     params = {"path": path, "provider": provider}
     if name:
         params["name"] = name
     result = qgis.send_command("add_raster_layer", params)
+    _dbg(f"qgis_add_raster_layer → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def get_layers(ctx: Context) -> str:
+def qgis_get_layers(ctx: Context) -> str:
     """
     List every layer currently loaded in the project.
 
@@ -319,11 +358,13 @@ def get_layers(ctx: Context) -> str:
         includes id, name, type, visible, and type-specific metadata.
     """
     qgis = get_qgis_connection()
+    _dbg("Entered tool qgis_get_layers")
     result = qgis.send_command("get_layers")
+    _dbg(f"qgis_get_layers → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def remove_layer(ctx: Context, layer_id: str) -> str:
+def qgis_remove_layer(ctx: Context, layer_id: str) -> str:
     """
     Remove a layer from the project.
 
@@ -342,11 +383,13 @@ def remove_layer(ctx: Context, layer_id: str) -> str:
     Deletes the layer from the project and the layer tree.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_remove_layer(layer_id={layer_id})")
     result = qgis.send_command("remove_layer", {"layer_id": layer_id})
+    _dbg(f"qgis_remove_layer → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def zoom_to_layer(ctx: Context, layer_id: str) -> str:
+def qgis_zoom_to_layer(ctx: Context, layer_id: str) -> str:
     """
     Zoom the map canvas to the full extent of a specific layer.
 
@@ -365,14 +408,16 @@ def zoom_to_layer(ctx: Context, layer_id: str) -> str:
     Changes the visible map extent in the QGIS UI only.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_zoom_to_layer(layer_id={layer_id})")
     result = qgis.send_command("zoom_to_layer", {"layer_id": layer_id})
+    _dbg(f"qgis_zoom_to_layer → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def get_layer_features(ctx: Context, layer_id: str, limit: int = 10) -> str:
+def qgis_get_layer_features(ctx: Context, layer_id: str, limit: int = 10) -> str:
     """
     Retrieve attribute and geometry data for a subset of features from a
-    vector layer.
+    vector layer. This is a good way to get details on layer attributes.
 
     Parameters
     ----------
@@ -388,11 +433,13 @@ def get_layer_features(ctx: Context, layer_id: str, limit: int = 10) -> str:
         each element is {id, attributes, geometry} (geometry expressed as WKT).
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_get_layer_features(layer_id={layer_id}, limit={limit})")
     result = qgis.send_command("get_layer_features", {"layer_id": layer_id, "limit": limit})
+    _dbg(f"qgis_get_layer_features → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def execute_processing(ctx: Context, algorithm: str, parameters: dict) -> str:
+def qgis_execute_processing(ctx: Context, algorithm: str, parameters: dict) -> str:
     """
     Run a QGIS Processing algorithm.
 
@@ -415,11 +462,13 @@ def execute_processing(ctx: Context, algorithm: str, parameters: dict) -> str:
     Depends on the algorithm – may create layers, files or modify data.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_execute_processing(algorithm={algorithm})")
     result = qgis.send_command("execute_processing", {"algorithm": algorithm, "parameters": parameters})
+    _dbg(f"qgis_execute_processing → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def save_project(ctx: Context, path: str = None) -> str:
+def qgis_save_project(ctx: Context, path: str = None) -> str:
     """
     Save the current project.
 
@@ -439,14 +488,16 @@ def save_project(ctx: Context, path: str = None) -> str:
     Writes a project file to disk.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_save_project(path={path})")
     params = {}
     if path:
         params["path"] = path
     result = qgis.send_command("save_project", params)
+    _dbg(f"qgis_save_project → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def render_map(ctx: Context, path: str, width: int = 800, height: int = 600) -> str:
+def qgis_render_map(ctx: Context, path: str, width: int = 800, height: int = 600) -> str:
     """
     Export the current map view to an image on disk.
 
@@ -469,32 +520,44 @@ def render_map(ctx: Context, path: str, width: int = 800, height: int = 600) -> 
     Renders the map and writes an image file; does not alter project data.
     """
     qgis = get_qgis_connection()
+    _dbg(f"Entered tool qgis_render_map(path={path}, width={width}, height={height})")
     result = qgis.send_command("render_map", {"path": path, "width": width, "height": height})
+    _dbg(f"qgis_render_map → {result}")
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def execute_code(ctx: Context, code: str) -> str:
+def qgis_execute_code(ctx: Context, code: str) -> str:
     """
     Execute arbitrary Python code inside the QGIS Python interpreter.
 
-    WARNING: This is a powerful tool that can be used when none of the
+    Important: This is a powerful tool that can be used when none of the
     other tools are sufficient or would be too inefficient.
+
+    Execution context
+    -----------------
+    Whatever code you pass to be executed will be wrapped in a "def mcp_func():"
+    block and then executed.  The return value of the function will be returned
+    to the client.
+
+    The execution namespace already contains:
+        • qgis (qgis.core.Qgis)
+        • QgsProject
+        • iface (Qgis interface)
+        • QgsApplication
+        • QgsVectorLayer, QgsRasterLayer
+        • QgsCoordinateReferenceSystem
 
     Parameters
     ----------
     code : str
-        Python source code string. The execution namespace already contains:
-          • qgis (qgis.core.Qgis)
-          • QgsProject
-          • iface (Qgis interface)
-          • QgsApplication
-          • QgsVectorLayer, QgsRasterLayer
-          • QgsCoordinateReferenceSystem
+        Python source code string.
 
     Returns
     -------
     str
-        JSON {"status":"success","result":{"executed": true}}
+        JSON {"status":"success","result":{"return": <value>}}
+        or if the result could not be serialised:
+        JSON {"status":"success","result":{"error": <message>}}
 
     Side Effects
     ------------
@@ -502,7 +565,9 @@ def execute_code(ctx: Context, code: str) -> str:
     layers and data.
     """
     qgis = get_qgis_connection()
+    _dbg("Entered tool qgis_execute_code")
     result = qgis.send_command("execute_code", {"code": code})
+    _dbg(f"qgis_execute_code → {result}")
     return json.dumps(result, indent=2)
 
 def main():

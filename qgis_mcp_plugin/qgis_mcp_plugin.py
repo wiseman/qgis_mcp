@@ -2,12 +2,21 @@ import os
 import json
 import socket
 import traceback
+import sys
 from qgis.core import *
 from qgis.gui import *
-from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer, Qt, QSize
+from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer, Qt, QSize, QVariant
 from qgis.PyQt.QtWidgets import QAction, QDockWidget, QVBoxLayout, QLabel, QPushButton, QSpinBox, QWidget
 from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.utils import active_plugins
+from datetime import datetime
+
+# Simple helper to write debug lines to stderr so they appear in QGIS console
+def _dbg(msg: str):
+    pass
+    # Write message to /Users/wisej041/qgis_mcp.log
+    # with open("/Users/wisej041/qgis_mcp.log", "a") as f:
+    #     f.write(f"{msg}\n")
 
 class QgisMCPServer(QObject):
     """Server class to handle socket connections and execute QGIS commands"""
@@ -29,6 +38,7 @@ class QgisMCPServer(QObject):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
+        _dbg(f"Binding MCP server socket on {self.host}:{self.port}")
         try:
             self.socket.bind((self.host, self.port))
             self.socket.listen(1)
@@ -39,7 +49,7 @@ class QgisMCPServer(QObject):
             self.timer.timeout.connect(self.process_server)
             self.timer.start(100)  # 100ms interval
             
-            QgsMessageLog.logMessage(f"QGIS MCP server started on {self.host}:{self.port}", "QGIS MCP")
+            _dbg("QGIS MCP server started and listening")
             return True
         except Exception as e:
             QgsMessageLog.logMessage(f"Failed to start server: {str(e)}", "QGIS MCP", Qgis.Critical)
@@ -51,6 +61,7 @@ class QgisMCPServer(QObject):
         self.running = False
         
         if self.timer:
+            _dbg("Stopping server timer")
             self.timer.stop()
             self.timer = None
             
@@ -61,24 +72,25 @@ class QgisMCPServer(QObject):
             
         self.socket = None
         self.client = None
-        QgsMessageLog.logMessage("QGIS MCP server stopped", "QGIS MCP")
+        _dbg("QGIS MCP server stopped")
     
     def process_server(self):
         """Process server operations (called by timer)"""
         if not self.running:
             return
             
+        _dbg("process_server tick")
         try:
             # Accept new connections
             if not self.client and self.socket:
                 try:
                     self.client, address = self.socket.accept()
                     self.client.setblocking(False)
-                    QgsMessageLog.logMessage(f"Connected to client: {address}", "QGIS MCP")
+                    _dbg(f"Accepted connection from {address}")
                 except BlockingIOError:
                     pass  # No connection waiting
                 except Exception as e:
-                    QgsMessageLog.logMessage(f"Error accepting connection: {str(e)}", "QGIS MCP", Qgis.Warning)
+                    _dbg(f"Error accepting connection: {str(e)}")
                 
             # Process existing connection
             if self.client:
@@ -87,48 +99,68 @@ class QgisMCPServer(QObject):
                     try:
                         data = self.client.recv(8192)
                         if data:
+                            _dbg(f"Received {len(data)} bytes from client")
                             self.buffer += data
                             # Try to process complete messages
                             try:
                                 # Attempt to parse the buffer as JSON
                                 command = json.loads(self.buffer.decode('utf-8'))
+                                _dbg(f"Decoded JSON command: {command}")
                                 # If successful, clear the buffer and process command
                                 self.buffer = b''
                                 response = self.execute_command(command)
-                                response_json = json.dumps(response)
+
+                                # Safely serialise the response.  If any values are
+                                # not JSON-serialisable (e.g. QVariant, QDate, etc.)
+                                # they will be coerced to strings by _json_default.
+                                try:
+                                    _dbg("Serializing response")
+                                    response_json = json.dumps(response, default=self._json_default)
+                                    _dbg(f"Serialized response: {response_json}")
+                                except Exception as e:
+                                    _dbg(f"Serialization error: {str(e)} – sending error result")
+                                    error_payload = {
+                                        "status": "error",
+                                        "message": f"Serialization error: {str(e)}"
+                                    }
+                                    response_json = json.dumps(error_payload)
+
+                                _dbg(f"Sending response of {len(response_json)} bytes")
                                 self.client.sendall(response_json.encode('utf-8'))
                             except json.JSONDecodeError:
                                 # Incomplete data, keep in buffer
+                                _dbg("Partial JSON received; waiting for more data")
                                 pass
                         else:
                             # Connection closed by client
-                            QgsMessageLog.logMessage("Client disconnected", "QGIS MCP")
+                            _dbg("Client disconnected (recv returned 0 bytes)")
                             self.client.close()
                             self.client = None
                             self.buffer = b''
                     except BlockingIOError:
                         pass  # No data available
                     except Exception as e:
-                        QgsMessageLog.logMessage(f"Error receiving data: {str(e)}", "QGIS MCP", Qgis.Warning)
+                        _dbg(f"Error receiving data: {str(e)}")
                         self.client.close()
                         self.client = None
                         self.buffer = b''
                         
                 except Exception as e:
-                    QgsMessageLog.logMessage(f"Error with client: {str(e)}", "QGIS MCP", Qgis.Warning)
+                    _dbg(f"Error with client: {str(e)}")
                     if self.client:
                         self.client.close()
                         self.client = None
                     self.buffer = b''
                     
         except Exception as e:
-            QgsMessageLog.logMessage(f"Server error: {str(e)}", "QGIS MCP", Qgis.Critical)
+            _dbg(f"Server error: {str(e)}")
 
     def execute_command(self, command):
         """Execute a command"""
         try:
             cmd_type = command.get("type")
             params = command.get("params", {})
+            _dbg(f"execute_command: type={cmd_type} params={params}")
             
             handlers = {
                 "ping": self.ping,
@@ -151,19 +183,19 @@ class QgisMCPServer(QObject):
             handler = handlers.get(cmd_type)
             if handler:
                 try:
-                    QgsMessageLog.logMessage(f"Executing handler for {cmd_type}", "QGIS MCP")
+                    _dbg(f"Executing handler for {cmd_type}")
                     result = handler(**params)
-                    QgsMessageLog.logMessage(f"Handler execution complete", "QGIS MCP")
+                    _dbg("Handler execution complete")
                     return {"status": "success", "result": result}
                 except Exception as e:
-                    QgsMessageLog.logMessage(f"Error in handler: {str(e)}", "QGIS MCP", Qgis.Critical)
+                    _dbg(f"Error in handler: {str(e)}")
                     traceback.print_exc()
                     return {"status": "error", "message": str(e)}
             else:
                 return {"status": "error", "message": f"Unknown command type: {cmd_type}"}
                 
         except Exception as e:
-            QgsMessageLog.logMessage(f"Error executing command: {str(e)}", "QGIS MCP", Qgis.Critical)
+            _dbg(f"Error executing command: {str(e)}")
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
@@ -219,9 +251,24 @@ class QgisMCPServer(QObject):
             return str(layer.type())
     
     def execute_code(self, code, **kwargs):
-        """Execute arbitrary PyQGIS code"""
+        """Execute arbitrary PyQGIS code and capture its return value.
+
+        The provided *code* string is wrapped inside a temporary function so
+        that its ``return`` statement becomes the value that is sent back to
+        the MCP client.  Example snippet received from the client::
+
+            layer = QgsProject.instance().mapLayersByName("roads")[0]
+            return layer.featureCount()
+
+        Whatever is returned by the snippet will be JSON-encoded and returned
+        to the client.
+
+        If the value cannot be JSON-serialised the reply will be::
+
+            {"error": "Non-JSON-serialisable result: …"}
+        """
         try:
-            # Create a local namespace for execution
+            # Prepare execution namespace with common PyQGIS symbols
             namespace = {
                 "qgis": Qgis,
                 "QgsProject": QgsProject,
@@ -229,12 +276,26 @@ class QgisMCPServer(QObject):
                 "QgsApplication": QgsApplication,
                 "QgsVectorLayer": QgsVectorLayer,
                 "QgsRasterLayer": QgsRasterLayer,
-                "QgsCoordinateReferenceSystem": QgsCoordinateReferenceSystem
+                "QgsCoordinateReferenceSystem": QgsCoordinateReferenceSystem,
             }
-            
-            # Execute the code
-            exec(code, namespace)
-            return {"executed": True}
+
+            # Wrap the incoming snippet in a function so it can use `return`
+            func_name = "_mcp_user_code"
+            wrapped_lines = [f"def {func_name}():"]
+            for line in code.splitlines():
+                wrapped_lines.append("    " + line)
+            wrapped_code = "\n".join(wrapped_lines)
+
+            # Compile and execute the wrapper, then call the generated func
+            exec(wrapped_code, namespace)
+            result = namespace[func_name]()
+
+            # Ensure the result can be JSON-serialised; if not, return an error
+            try:
+                json.dumps(result)
+                return {"return": result}
+            except TypeError:
+                return {"error": f"Non-JSON-serialisable result: {str(result)}"}
         except Exception as e:
             raise Exception(f"Code execution error: {str(e)}")
     
@@ -335,42 +396,43 @@ class QgisMCPServer(QObject):
     def get_layer_features(self, layer_id, limit=10, **kwargs):
         """Get features from a vector layer"""
         project = QgsProject.instance()
-        
+        _dbg(f"get_layer_features: layer_id={layer_id}, limit={limit}")
         if layer_id in project.mapLayers():
             layer = project.mapLayer(layer_id)
             
             if layer.type() != QgsMapLayer.VectorLayer:
                 raise Exception(f"Layer is not a vector layer: {layer_id}")
-            
+            _dbg(f"got layer: {layer}")
             features = []
             for i, feature in enumerate(layer.getFeatures()):
                 if i >= limit:
                     break
-                    
+                _dbg(f"* got feature {i}: {feature}")
                 # Extract attributes
                 attrs = {}
                 for field in layer.fields():
-                    attrs[field.name()] = feature.attribute(field.name())
-                
+                    attrs[str(field.name())] = str(feature.attribute(field.name()))
+                _dbg(f"* got attrs: {attrs}")
                 # Extract geometry if available
                 geom = None
                 if feature.hasGeometry():
                     geom = {
-                        "type": feature.geometry().type(),
-                        "wkt": feature.geometry().asWkt(precision=4)
+                        "type": str(feature.geometry().type()),
+                        "wkt": str(feature.geometry().asWkt(precision=4))
                     }
-                
+                _dbg(f"* got geom: {geom}")
                 features.append({
                     "id": feature.id(),
                     "attributes": attrs,
                     "geometry": geom
                 })
             
+            _dbg("returning features")
             return {
                 "layer_id": layer_id,
                 "feature_count": layer.featureCount(),
                 "features": features,
-                "fields": [field.name() for field in layer.fields()]
+                "fields": [str(field.name()) for field in layer.fields()]
             }
         else:
             raise Exception(f"Layer not found: {layer_id}")
@@ -476,6 +538,31 @@ class QgisMCPServer(QObject):
                 
         except Exception as e:
             raise Exception(f"Render error: {str(e)}")
+
+    # ------------------------------------------------------------------
+    # Helper methods
+    # ------------------------------------------------------------------
+
+    def _json_default(self, obj):
+        """Fallback converter for objects that are not JSON-serialisable.
+
+        Currently coerces QVariant and any other unsupported type to a string.
+        This ensures the MCP reply can always be encoded to JSON instead of
+        triggering a broken-pipe on the client side.
+        """
+        try:
+            # Unwrap QVariant to its Python value when possible
+            if isinstance(obj, QVariant):
+                return obj if obj is None else obj.value() if hasattr(obj, "value") else str(obj)
+
+            # Add more specific conversions as needed (e.g. QDate → ISO string)
+            if hasattr(obj, "toString"):
+                return obj.toString(Qt.ISODate)  # QDate / QDateTime / etc.
+
+            # Fallback – stringify unknown objects
+            return str(obj)
+        except Exception:
+            return str(obj)
 
 
 class QgisMCPDockWidget(QDockWidget):
