@@ -355,7 +355,8 @@ def qgis_get_layers(ctx: Context) -> str:
     -------
     str
         JSON string containing an array of layer descriptors. Each descriptor
-        includes id, name, type, visible, and type-specific metadata.
+        includes id, name, type, fields/attributes, visible, and type-specific
+        metadata.
     """
     qgis = get_qgis_connection()
     _dbg("Entered tool qgis_get_layers")

@@ -362,6 +362,7 @@ class QgisMCPServer(QObject):
                 "id": layer_id,
                 "name": layer.name(),
                 "type": self._get_layer_type(layer),
+                'fields': [str(field.name()) for field in layer.fields()],
                 "visible": project.layerTreeRoot().findLayer(layer_id).isVisible()
             }
             
