@@ -28,8 +28,10 @@ class QgisMCPServer(QObject):
         self.iface = iface
         self.running = False
         self.socket = None
-        self.client = None
-        self.buffer = b''
+        # Maintain multiple client sockets -> receive buffers
+        self.clients = {}  # dict mapping socket objects to bytes buffers
+        # Deprecated single-client attributes retained for backward compatibility
+        self.client = None  # kept but unused after multi-client refactor
         self.timer = None
     
     def start(self):
@@ -41,7 +43,8 @@ class QgisMCPServer(QObject):
         _dbg(f"Binding MCP server socket on {self.host}:{self.port}")
         try:
             self.socket.bind((self.host, self.port))
-            self.socket.listen(1)
+            # Allow a reasonable backlog so several peers can queue while we are busy
+            self.socket.listen(20)
             self.socket.setblocking(False)
             
             # Create a timer to process server operations
@@ -65,95 +68,102 @@ class QgisMCPServer(QObject):
             self.timer.stop()
             self.timer = None
             
+        # Close server socket first so no more accepts come in
         if self.socket:
             self.socket.close()
-        if self.client:
-            self.client.close()
+        
+        # Close all connected client sockets
+        for cli in list(self.clients.keys()):
+            try:
+                cli.close()
+            except Exception:
+                pass
+            self.clients.pop(cli, None)
             
         self.socket = None
         self.client = None
         _dbg("QGIS MCP server stopped")
     
     def process_server(self):
-        """Process server operations (called by timer)"""
+        """Process server operations (called by timer)
+
+        Runs inside the main QGIS GUI thread (triggered by QTimer).  The logic
+        is fully non-blocking:
+
+        1. Accept any pending incoming TCP connections and register them.
+        2. Iterate over all registered client sockets, read whatever data is
+           available, and try to decode a complete JSON message.
+        3. Execute the command and send the reply back through the very same
+           socket.  When the peer closes the connection (recv → b""), drop it.
+        """
         if not self.running:
             return
-            
-        _dbg("process_server tick")
-        try:
-            # Accept new connections
-            if not self.client and self.socket:
-                try:
-                    self.client, address = self.socket.accept()
-                    self.client.setblocking(False)
-                    _dbg(f"Accepted connection from {address}")
-                except BlockingIOError:
-                    pass  # No connection waiting
-                except Exception as e:
-                    _dbg(f"Error accepting connection: {str(e)}")
-                
-            # Process existing connection
-            if self.client:
-                try:
-                    # Try to receive data
-                    try:
-                        data = self.client.recv(8192)
-                        if data:
-                            _dbg(f"Received {len(data)} bytes from client")
-                            self.buffer += data
-                            # Try to process complete messages
-                            try:
-                                # Attempt to parse the buffer as JSON
-                                command = json.loads(self.buffer.decode('utf-8'))
-                                _dbg(f"Decoded JSON command: {command}")
-                                # If successful, clear the buffer and process command
-                                self.buffer = b''
-                                response = self.execute_command(command)
 
-                                # Safely serialise the response.  If any values are
-                                # not JSON-serialisable (e.g. QVariant, QDate, etc.)
-                                # they will be coerced to strings by _json_default.
-                                try:
-                                    _dbg("Serializing response")
-                                    response_json = json.dumps(response, default=self._json_default)
-                                    _dbg(f"Serialized response: {response_json}")
-                                except Exception as e:
-                                    _dbg(f"Serialization error: {str(e)} – sending error result")
-                                    error_payload = {
-                                        "status": "error",
-                                        "message": f"Serialization error: {str(e)}"
-                                    }
-                                    response_json = json.dumps(error_payload)
+        # ------------------------------------------------------------------
+        # 1) Accept all waiting peers
+        # ------------------------------------------------------------------
+        while True:
+            try:
+                client, address = self.socket.accept()
+                client.setblocking(False)
+                self.clients[client] = b''
+                _dbg(f"Accepted connection from {address}; active clients = {len(self.clients)}")
+            except BlockingIOError:
+                break  # No more queued connections
+            except Exception as e:
+                _dbg(f"Error accepting connection: {str(e)}")
+                break
 
-                                _dbg(f"Sending response of {len(response_json)} bytes")
-                                self.client.sendall(response_json.encode('utf-8'))
-                            except json.JSONDecodeError:
-                                # Incomplete data, keep in buffer
-                                _dbg("Partial JSON received; waiting for more data")
-                                pass
-                        else:
-                            # Connection closed by client
-                            _dbg("Client disconnected (recv returned 0 bytes)")
-                            self.client.close()
-                            self.client = None
-                            self.buffer = b''
-                    except BlockingIOError:
-                        pass  # No data available
-                    except Exception as e:
-                        _dbg(f"Error receiving data: {str(e)}")
-                        self.client.close()
-                        self.client = None
-                        self.buffer = b''
-                        
-                except Exception as e:
-                    _dbg(f"Error with client: {str(e)}")
-                    if self.client:
-                        self.client.close()
-                        self.client = None
-                    self.buffer = b''
-                    
-        except Exception as e:
-            _dbg(f"Server error: {str(e)}")
+        # ------------------------------------------------------------------
+        # 2) Handle data from existing clients
+        # ------------------------------------------------------------------
+        for cli in list(self.clients.keys()):  # iterate over a copy – may mutate
+            try:
+                data = cli.recv(8192)
+                if data:
+                    self.clients[cli] += data
+                else:
+                    # Peer has closed the connection
+                    _dbg("Client disconnected")
+                    self._drop_client(cli)
+                    continue
+            except BlockingIOError:
+                # No data ready for this socket this tick
+                pass
+            except Exception as e:
+                _dbg(f"Error receiving data: {str(e)} – dropping client")
+                self._drop_client(cli)
+                continue
+
+            # Try to parse a full JSON object from the buffer
+            try:
+                buffer_str = self.clients[cli].decode('utf-8')
+                command = json.loads(buffer_str)
+                # Clear buffer only after successful parse
+                self.clients[cli] = b''
+            except json.JSONDecodeError:
+                # Incomplete transmission; wait for more bytes
+                continue
+
+            # Execute the requested command
+            response = self.execute_command(command)
+
+            # Serialize response, always returning JSON even on failures
+            try:
+                response_json = json.dumps(response, default=self._json_default)
+            except Exception as e:
+                error_payload = {
+                    "status": "error",
+                    "message": f"Serialization error: {str(e)}"
+                }
+                response_json = json.dumps(error_payload)
+
+            # Send back to the originating client
+            try:
+                cli.sendall(response_json.encode('utf-8'))
+            except Exception as e:
+                _dbg(f"Error sending response: {str(e)} – dropping client")
+                self._drop_client(cli)
 
     def execute_command(self, command):
         """Execute a command"""
@@ -563,6 +573,14 @@ class QgisMCPServer(QObject):
             return str(obj)
         except Exception:
             return str(obj)
+
+    def _drop_client(self, cli):
+        """Close and remove a client socket from the registry."""
+        try:
+            cli.close()
+        except Exception:
+            pass
+        self.clients.pop(cli, None)
 
 
 class QgisMCPDockWidget(QDockWidget):
