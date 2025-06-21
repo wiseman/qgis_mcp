@@ -417,8 +417,9 @@ def qgis_zoom_to_layer(ctx: Context, layer_id: str) -> str:
 @mcp.tool()
 def qgis_get_layer_features(ctx: Context, layer_id: str, limit: int = 10) -> str:
     """
-    Retrieve attribute and geometry data for a subset of features from a
-    vector layer. This is a good way to get details on layer attributes.
+    Retrieve attribute and lightweight geometry data for a subset of
+    features from a vector layer.  Useful for quickly inspecting layer
+    attributes without transferring full geometries for large features.
 
     Parameters
     ----------
@@ -430,8 +431,37 @@ def qgis_get_layer_features(ctx: Context, layer_id: str, limit: int = 10) -> str
     Returns
     -------
     str
-        JSON with layer_id, feature_count, fields and a *features* array where
-        each element is {id, attributes, geometry} (geometry expressed as WKT).
+        JSON string with the keys:
+
+        • layer_id – id of the queried layer
+        • feature_count – total number of features in the layer
+        • fields – list of attribute names
+        • features – array of feature descriptors
+
+        For every feature the entry is::
+
+            {
+              "id": <int>,
+              "attributes": {<field>: <value>, …},
+              "geometry": {
+                 "type": "point",
+                 "wkt": "POINT (…)")
+              }
+            }
+
+        when the geometry is a point (including multipoint with one point).
+
+        For all other geometry types the geometry object is::
+
+            {
+              "type": "centroid_bbox",
+              "centroid_wkt": "POINT (…)" | null,
+              "bbox": {"xmin": <float>, "ymin": <float>,
+                       "xmax": <float>, "ymax": <float>}
+            }
+
+        This approach keeps the payload small while still providing a
+        meaningful spatial summary for lines and polygons.
     """
     qgis = get_qgis_connection()
     _dbg(f"Entered tool qgis_get_layer_features(layer_id={layer_id}, limit={limit})")

@@ -358,11 +358,17 @@ class QgisMCPServer(QObject):
         layers = []
         
         for layer_id, layer in project.mapLayers().items():
+            # Safely extract attribute field names only for vector layers
+            if layer.type() == QgsMapLayer.VectorLayer:
+                field_names = [str(field.name()) for field in layer.fields()]
+            else:
+                field_names = []
+
             layer_info = {
                 "id": layer_id,
                 "name": layer.name(),
                 "type": self._get_layer_type(layer),
-                'fields': [str(field.name()) for field in layer.fields()],
+                "fields": field_names,
                 "visible": project.layerTreeRoot().findLayer(layer_id).isVisible()
             }
             
@@ -424,13 +430,34 @@ class QgisMCPServer(QObject):
                 for field in layer.fields():
                     attrs[str(field.name())] = str(feature.attribute(field.name()))
                 _dbg(f"* got attrs: {attrs}")
-                # Extract geometry if available
+                # Extract geometry – full geometry for points, else centroid & bbox
                 geom = None
                 if feature.hasGeometry():
-                    geom = {
-                        "type": str(feature.geometry().type()),
-                        "wkt": str(feature.geometry().asWkt(precision=4))
-                    }
+                    geom_obj = feature.geometry()
+                    try:
+                        # If the geometry is a point (or multipoint with exactly one point), return full WKT
+                        if geom_obj.type() == QgsWkbTypes.PointGeometry:
+                            geom = {
+                                "type": "point",
+                                "wkt": str(geom_obj.asWkt(precision=4))
+                            }
+                        else:
+                            # For non-point geometries return centroid and bounding box
+                            centroid = geom_obj.centroid()
+                            bbox = geom_obj.boundingBox()
+                            geom = {
+                                "type": "centroid_bbox",
+                                "centroid_wkt": str(centroid.asWkt(precision=4)) if centroid and not centroid.isNull() else None,
+                                "bbox": {
+                                    "xmin": bbox.xMinimum(),
+                                    "ymin": bbox.yMinimum(),
+                                    "xmax": bbox.xMaximum(),
+                                    "ymax": bbox.yMaximum()
+                                }
+                            }
+                    except Exception as e:
+                        # Fallback – return geometry as string to avoid breaking the whole call
+                        geom = {"error": f"Geometry processing error: {str(e)}"}
                 _dbg(f"* got geom: {geom}")
                 features.append({
                     "id": feature.id(),
