@@ -355,8 +355,16 @@ def qgis_get_layers(ctx: Context) -> str:
     -------
     str
         JSON string containing an array of layer descriptors. Each descriptor
-        includes id, name, type, fields/attributes, visible, and type-specific
-        metadata.
+        includes:
+
+        • id – layer id
+        • name – display name
+        • type – "vector_<geom>" or "raster"
+        • crs – Coordinate Reference System auth id (e.g. "EPSG:3857")
+        • fields – attribute names (vector layers only)
+        • visible – layer tree visibility flag
+        • type-specific metadata such as feature_count/geometry_type for
+          vectors or width/height for rasters.
     """
     qgis = get_qgis_connection()
     _dbg("Entered tool qgis_get_layers")

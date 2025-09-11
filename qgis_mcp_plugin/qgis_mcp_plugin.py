@@ -353,7 +353,19 @@ class QgisMCPServer(QObject):
         }
     
     def get_layers(self, **kwargs):
-        """Get all layers in the project"""
+        """Get all layers in the project
+
+        Returns a list of layer dictionaries with the keys:
+
+        • id – internal QGIS layer id
+        • name – layer name as shown in the layer panel
+        • type – "vector_<geom>" or "raster"
+        • crs – layer Coordinate Reference System auth id (e.g. "EPSG:4326")
+        • fields – attribute field names (vector layers only)
+        • visible – boolean layer tree visibility flag
+        • feature_count / geometry_type – vector-specific metadata
+        • width / height – raster-specific metadata
+        """
         project = QgsProject.instance()
         layers = []
         
@@ -369,7 +381,8 @@ class QgisMCPServer(QObject):
                 "name": layer.name(),
                 "type": self._get_layer_type(layer),
                 "fields": field_names,
-                "visible": project.layerTreeRoot().findLayer(layer_id).isVisible()
+                "visible": project.layerTreeRoot().findLayer(layer_id).isVisible(),
+                "crs": layer.crs().authid() if hasattr(layer, "crs") else None,
             }
             
             # Add type-specific information
