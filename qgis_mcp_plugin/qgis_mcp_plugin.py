@@ -551,44 +551,56 @@ class QgisMCPServer(QObject):
         else:
             raise Exception(f"Failed to save project to {path}")
     
-    def render_map(self, path, width=800, height=600, **kwargs):
-        """Render the current map view to an image"""
+    def render_map(self, path, width=800, height=600, include_hidden=False, transparent=False, **kwargs):
+        """
+        Render the current map view to an image, respecting layer-tree order & visibility.
+        """
         try:
-            # Create map settings
+            project = QgsProject.instance()
+            root = project.layerTreeRoot()
+
+            # --- 1) Build layer list in DRAW ORDER (bottom→top), respecting visibility ---
+            # QGIS draws layers in the order provided; we want the project's layer-tree order.
+            ordered_layers = list(root.layerOrder())  # returns [QgsMapLayer, ...] bottom→top
+            if not include_hidden:
+                visible_ids = {n.layerId() for n in root.findLayers() if n.isVisible()}
+                ordered_layers = [lyr for lyr in ordered_layers if lyr and lyr.id() in visible_ids]
+
+            # Safety: drop invalid layers
+            ordered_layers = [lyr for lyr in ordered_layers if lyr and lyr.isValid()]
+            if not ordered_layers:
+                raise Exception("No drawable layers (after visibility/order filtering).")
+
+            # --- 2) Mirror canvas/map settings so reprojection & styles match what you see ---
+            canvas_ms = self.iface.mapCanvas().mapSettings()
+
             ms = QgsMapSettings()
-            
-            # Set layers to render
-            layers = list(QgsProject.instance().mapLayers().values())
-            ms.setLayers(layers)
-            
-            # Set map canvas properties
-            rect = self.iface.mapCanvas().extent()
-            ms.setExtent(rect)
+            ms.setLayers(ordered_layers)
+            ms.setExtent(self.iface.mapCanvas().extent())  # current view
             ms.setOutputSize(QSize(width, height))
-            ms.setBackgroundColor(QColor(255, 255, 255))
-            ms.setOutputDpi(96)
-            
-            # Create the render
-            render = QgsMapRendererParallelJob(ms)
-            
-            # Start rendering
-            render.start()
-            render.waitForFinished()
-            
-            # Get the image and save
-            img = render.renderedImage()
-            if img.save(path):
-                return {
-                    "rendered": True,
-                    "path": path,
-                    "width": width,
-                    "height": height
-                }
-            else:
+            ms.setBackgroundColor(QColor(0, 0, 0, 0) if transparent else QColor(255, 255, 255))
+            ms.setOutputDpi(canvas_ms.outputDpi())
+            ms.setTransformContext(project.transformContext())
+            ms.setDestinationCrs(canvas_ms.destinationCrs())
+            ms.setFlag(QgsMapSettings.Antialiasing, True)
+            ms.setFlag(QgsMapSettings.DrawLabeling, True)  # labels, if any
+            ms.setFlag(QgsMapSettings.UseAdvancedEffects, True)  # blend modes, layer opacity, etc.
+
+            # --- 3) Render ---
+            job = QgsMapRendererParallelJob(ms)
+            job.start()
+            job.waitForFinished()
+
+            img = job.renderedImage()
+            if not img.save(path):
                 raise Exception(f"Failed to save rendered image to {path}")
-                
+
+            return {"rendered": True, "path": path, "width": width, "height": height,
+                    "layers_drawn": [lyr.name() for lyr in ordered_layers]}
+
         except Exception as e:
             raise Exception(f"Render error: {str(e)}")
+
 
     # ------------------------------------------------------------------
     # Helper methods
