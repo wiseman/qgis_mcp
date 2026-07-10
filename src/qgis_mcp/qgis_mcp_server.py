@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "mcp[cli]>=1.3.0",
+# ]
+# ///
 """
 QGIS MCP Client - Simple client to connect to the QGIS MCP server
 """
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 import socket
@@ -123,7 +130,9 @@ def get_qgis_connection():
     # Create a new connection if needed
     if _qgis_connection is None:
         _dbg("Creating new QGIS MCP client instance")
-        _qgis_connection = QgisMCPServer(host="localhost", port=9876)
+        host = os.environ.get("QGIS_MCP_HOST") or "localhost"
+        port = int(os.environ.get("QGIS_MCP_PORT") or 9876)
+        _qgis_connection = QgisMCPServer(host=host, port=port)
         if not _qgis_connection.connect():
             _dbg("Failed to connect to Qgis")
             _qgis_connection = None
@@ -164,7 +173,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 
 mcp = FastMCP(
     "Qgis_mcp",
-    description="Qgis integration through the Model Context Protocol",
+    instructions="Qgis integration through the Model Context Protocol",
     lifespan=server_lifespan
 )
 

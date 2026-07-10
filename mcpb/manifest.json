@@ -1,0 +1,52 @@
+{
+  "manifest_version": "0.3",
+  "name": "qgis-mcp",
+  "display_name": "QGIS MCP",
+  "version": "0.1.0",
+  "description": "Control QGIS from Claude: load projects, manage layers, run processing algorithms, render maps, and execute PyQGIS code.",
+  "long_description": "Connects Claude to a running QGIS instance through the QGIS MCP plugin's socket server. Requires the QGIS MCP plugin to be installed and started in QGIS (see https://github.com/wiseman/qgis_mcp), and the uv package manager (https://docs.astral.sh/uv/) on your PATH — uv provides Python and all server dependencies automatically.",
+  "author": {
+    "name": "John Wiseman",
+    "email": "jjwiseman@gmail.com"
+  },
+  "homepage": "https://github.com/wiseman/qgis_mcp",
+  "server": {
+    "type": "python",
+    "entry_point": "server/qgis_mcp_server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "${__dirname}/server/qgis_mcp_server.py"
+      ],
+      "env": {
+        "QGIS_MCP_HOST": "${user_config.host}",
+        "QGIS_MCP_PORT": "${user_config.port}"
+      }
+    }
+  },
+  "user_config": {
+    "host": {
+      "type": "string",
+      "title": "QGIS host",
+      "description": "Host where the QGIS MCP plugin's socket server is listening",
+      "default": "localhost",
+      "required": false
+    },
+    "port": {
+      "type": "number",
+      "title": "QGIS port",
+      "description": "Port of the QGIS MCP plugin's socket server (set in the QGIS MCP panel)",
+      "default": 9876,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.12"
+    }
+  },
+  "keywords": ["qgis", "gis", "geospatial", "maps"],
+  "license": "MIT"
+}
