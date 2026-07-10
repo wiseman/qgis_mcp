@@ -17,7 +17,6 @@ import qgis.gui
 from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer, Qt, QSize, QVariant
 from qgis.PyQt.QtWidgets import QAction, QDockWidget, QVBoxLayout, QLabel, QPushButton, QSpinBox, QWidget
 from qgis.PyQt.QtGui import QIcon, QColor
-from qgis.utils import active_plugins
 from datetime import datetime
 
 # Filename used when compiling user snippets, so tracebacks name the source.
@@ -200,22 +199,15 @@ class QgisMCPServer(QObject):
             params = command.get("params", {})
             _dbg(f"execute_command: type={cmd_type} params={params}")
             
+            # "ping" is kept for socket-level liveness checks even though the
+            # MCP server exposes no ping tool; everything else project- or
+            # layer-related happens through execute_code.
             handlers = {
                 "ping": self.ping,
-                "get_qgis_info": self.get_qgis_info,
-                "load_project": self.load_project,
-                "get_project_info": self.get_project_info,
                 "execute_code": self.execute_code,
-                "add_vector_layer": self.add_vector_layer,
-                "add_raster_layer": self.add_raster_layer,
                 "get_layers": self.get_layers,
-                "remove_layer": self.remove_layer,
-                "zoom_to_layer": self.zoom_to_layer,
                 "get_layer_features": self.get_layer_features,
-                "execute_processing": self.execute_processing,
-                "save_project": self.save_project,
                 "render_map": self.render_map,
-                "create_new_project": self.create_new_project,
             }
             
             handler = handlers.get(cmd_type)
@@ -241,43 +233,6 @@ class QgisMCPServer(QObject):
     def ping(self, **kwargs):
         """Simple ping command"""
         return {"pong": True}
-    
-    def get_qgis_info(self, **kwargs):
-        """Get basic QGIS information"""
-        return {
-            "qgis_version": Qgis.version(),
-            "profile_folder": QgsApplication.qgisSettingsDirPath(),
-            "plugins_count": len(active_plugins)
-        }
-    
-    def get_project_info(self, **kwargs):
-        """Get information about the current QGIS project"""
-        project = QgsProject.instance()
-        
-        # Get basic project information
-        info = {
-            "filename": project.fileName(),
-            "title": project.title(),
-            "layer_count": len(project.mapLayers()),
-            "crs": project.crs().authid(),
-            "layers": []
-        }
-        
-        # Add basic layer information (limit to 10 layers for performance)
-        layers = list(project.mapLayers().values())
-        for i, layer in enumerate(layers):
-            if i >= 10:  # Limit to 10 layers
-                break
-                
-            layer_info = {
-                "id": layer.id(),
-                "name": layer.name(),
-                "type": self._get_layer_type(layer),
-                "visible": layer.isValid() and project.layerTreeRoot().findLayer(layer.id()).isVisible()
-            }
-            info["layers"].append(layer_info)
-        
-        return info
     
     def _get_layer_type(self, layer):
         """Helper to get layer type as string"""
@@ -411,49 +366,6 @@ class QgisMCPServer(QObject):
             "stderr": _truncate(stderr_capture.getvalue()),
         }
     
-    def add_vector_layer(self, path, name=None, provider="ogr", **kwargs):
-        """Add a vector layer to the project"""
-        if not name:
-            name = os.path.basename(path)
-            
-        # Create the layer
-        layer = QgsVectorLayer(path, name, provider)
-        
-        if not layer.isValid():
-            raise Exception(f"Layer is not valid: {path}")
-        
-        # Add to project
-        QgsProject.instance().addMapLayer(layer)
-        
-        return {
-            "id": layer.id(),
-            "name": layer.name(),
-            "type": self._get_layer_type(layer),
-            "feature_count": layer.featureCount()
-        }
-    
-    def add_raster_layer(self, path, name=None, provider="gdal", **kwargs):
-        """Add a raster layer to the project"""
-        if not name:
-            name = os.path.basename(path)
-            
-        # Create the layer
-        layer = QgsRasterLayer(path, name, provider)
-        
-        if not layer.isValid():
-            raise Exception(f"Layer is not valid: {path}")
-        
-        # Add to project
-        QgsProject.instance().addMapLayer(layer)
-        
-        return {
-            "id": layer.id(),
-            "name": layer.name(),
-            "type": "raster",
-            "width": layer.width(),
-            "height": layer.height()
-        }
-    
     def get_layers(self, **kwargs):
         """Get all layers in the project
 
@@ -502,28 +414,6 @@ class QgisMCPServer(QObject):
             layers.append(layer_info)
         
         return layers
-    
-    def remove_layer(self, layer_id, **kwargs):
-        """Remove a layer from the project"""
-        project = QgsProject.instance()
-        
-        if layer_id in project.mapLayers():
-            project.removeMapLayer(layer_id)
-            return {"removed": layer_id}
-        else:
-            raise Exception(f"Layer not found: {layer_id}")
-    
-    def zoom_to_layer(self, layer_id, **kwargs):
-        """Zoom to a layer's extent"""
-        project = QgsProject.instance()
-        
-        if layer_id in project.mapLayers():
-            layer = project.mapLayer(layer_id)
-            self.iface.setActiveLayer(layer)
-            self.iface.zoomToActiveLayer()
-            return {"zoomed_to": layer_id}
-        else:
-            raise Exception(f"Layer not found: {layer_id}")
     
     def get_layer_features(self, layer_id, limit=10, **kwargs):
         """Get features from a vector layer"""
@@ -589,69 +479,6 @@ class QgisMCPServer(QObject):
             }
         else:
             raise Exception(f"Layer not found: {layer_id}")
-    
-    def execute_processing(self, algorithm, parameters, **kwargs):
-        """Execute a processing algorithm"""
-        try:
-            import processing
-            result = processing.run(algorithm, parameters)
-            return {
-                "algorithm": algorithm,
-                "result": {k: str(v) for k, v in result.items()}  # Convert values to strings for JSON
-            }
-        except Exception as e:
-            raise Exception(f"Processing error: {str(e)}")
-    
-    def save_project(self, path=None, **kwargs):
-        """Save the current project"""
-        project = QgsProject.instance()
-        
-        if not path and not project.fileName():
-            raise Exception("No project path specified and no current project path")
-        
-        save_path = path if path else project.fileName()
-        if project.write(save_path):
-            return {"saved": save_path}
-        else:
-            raise Exception(f"Failed to save project to {save_path}")
-    
-    def load_project(self, path, **kwargs):
-        """Load a project"""
-        project = QgsProject.instance()
-        
-        if project.read(path):
-            self.iface.mapCanvas().refresh()
-            return {
-                "loaded": path,
-                "layer_count": len(project.mapLayers())
-            }
-        else:
-            raise Exception(f"Failed to load project from {path}")
-    
-    def create_new_project(self, path, **kwargs):
-        """
-        Creates a new QGIS project and saves it at the specified path.
-        If a project is already loaded, it clears it before creating the new one.
-        
-        :param project_path: Full path where the project will be saved
-                            (e.g., 'C:/path/to/project.qgz')
-        """
-        project = QgsProject.instance()
-        
-        if project.fileName():
-            project.clear()
-        
-        project.setFileName(path)
-        self.iface.mapCanvas().refresh()
-        
-        # Save the project
-        if project.write():
-            return {
-                "created": f"Project created and saved successfully at: {path}",
-                "layer_count": len(project.mapLayers())
-            }
-        else:
-            raise Exception(f"Failed to save project to {path}")
     
     def render_map(self, path, width=800, height=600, include_hidden=False, transparent=False, **kwargs):
         """

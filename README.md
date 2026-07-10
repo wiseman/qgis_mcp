@@ -2,7 +2,7 @@
 
 QGISMCP connects [QGIS](https://qgis.org/) to [Claude](https://claude.ai/) through the Model Context Protocol (MCP), allowing Claude to directly interact with and control QGIS. This integration enables prompt-assisted project creation, layer loading, code execution and more.
 
-This is a fork of [jjsantos01/qgis_mcp](https://github.com/jjsantos01/qgis_mcp) (which was in turn strongly based on the [BlenderMCP](https://github.com/ahujasid/blender-mcp/tree/main) project by [Siddharth Ahuja](https://x.com/sidahuj)). It has diverged from upstream: reworked `execute_code` with notebook semantics and captured output, lightweight feature geometry, multi-client connection handling, and improved tool docs.
+This is a fork of [jjsantos01/qgis_mcp](https://github.com/jjsantos01/qgis_mcp) (which was in turn strongly based on the [BlenderMCP](https://github.com/ahujasid/blender-mcp/tree/main) project by [Siddharth Ahuja](https://x.com/sidahuj)). It has diverged from upstream: the MCP server is a Node.js package distributed via npm, `execute_code` has notebook semantics and captured output, feature geometry is lightweight, multiple clients can connect simultaneously, and the tool surface is trimmed to four tools (project and layer management happen through `execute_code`).
 
 ## Features
 
@@ -130,21 +130,12 @@ Once the QGIS server is running and the MCP server is configured, Claude will ha
 
 #### Tools
 
-- `qgis_ping` - Check connectivity to the running QGIS instance
-- `qgis_get_info` - Get information about the QGIS installation
-- `qgis_load_project` - Load a QGIS project from a path
-- `qgis_create_new_project` - Create a new project and save it
-- `qgis_get_project_info` - Get current project information
-- `qgis_add_vector_layer` - Add a vector layer to the project
-- `qgis_add_raster_layer` - Add a raster layer to the project
+The server exposes a deliberately small set of four tools:
+
+- `qgis_execute_code` - Execute arbitrary PyQGIS code with notebook semantics: the last bare expression becomes the result, `print()` output is captured, and exceptions are returned in-band with tracebacks. This is the workhorse — loading/saving projects, adding/removing layers, and running Processing algorithms all happen here, and the tool description includes recipes for the common operations
 - `qgis_get_layers` - List all layers in the current project, including their fields
-- `qgis_remove_layer` - Remove a layer from the project by its ID
-- `qgis_zoom_to_layer` - Zoom to the extent of a layer
 - `qgis_get_layer_features` - Retrieve features from a vector layer. Returns full geometry for points but only centroid + bounding box for lines and polygons, to keep payloads small
-- `qgis_execute_processing` - Run a Processing algorithm
-- `qgis_save_project` - Save the current project
 - `qgis_render_map` - Render the current map view to an image file
-- `qgis_execute_code` - Execute arbitrary PyQGIS code with notebook semantics: the last bare expression becomes the result, `print()` output is captured, and exceptions are returned in-band with tracebacks
 
 ### Example commands
 
