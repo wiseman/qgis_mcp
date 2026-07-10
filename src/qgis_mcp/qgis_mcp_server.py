@@ -574,17 +574,24 @@ def qgis_execute_code(ctx: Context, code: str) -> str:
 
     Execution context
     -----------------
-    Whatever code you pass to be executed will be wrapped in a "def mcp_func():"
-    block and then executed.  The return value of the function will be returned
-    to the client.
+    The code runs like a Jupyter cell.  If its last statement is a bare
+    expression, that expression's value is returned as "result".  Do not use a
+    top-level "return" — it is a syntax error.  Anything you print() is captured
+    and returned as "stdout", so print() is a fine way to inspect state.
 
-    The execution namespace already contains:
-        • qgis (qgis.core.Qgis)
-        • QgsProject
-        • iface (Qgis interface)
-        • QgsApplication
-        • QgsVectorLayer, QgsRasterLayer
-        • QgsCoordinateReferenceSystem
+        layer = QgsProject.instance().mapLayersByName("roads")[0]
+        layer.featureCount()          # ← this becomes "result"
+
+    The execution namespace already contains everything exported by qgis.core
+    and qgis.gui (QgsProject, QgsVectorLayer, QgsCoordinateReferenceSystem,
+    …), plus:
+        • iface (the QgisInterface)
+        • qgis (the package: qgis.core, qgis.utils, …)
+        • processing (when the Processing plugin is loaded)
+        • json, math, os
+
+    The code runs on the QGIS main thread and blocks the UI while it does, so
+    keep snippets bounded; do not start long loops or wait on input.
 
     Parameters
     ----------
@@ -594,9 +601,20 @@ def qgis_execute_code(ctx: Context, code: str) -> str:
     Returns
     -------
     str
-        JSON {"status":"success","result":{"return": <value>}}
-        or if the result could not be serialised:
-        JSON {"status":"success","result":{"error": <message>}}
+        JSON {"status":"success","result": <payload>}, where <payload> is:
+
+        On success:
+            {"success": true, "result": <value>, "stdout": …, "stderr": …}
+        When the value is not JSON-encodable (e.g. a QgsVectorLayer), "result"
+        is null and "result_repr" holds its repr() instead.
+
+        When your code raises, the call still succeeds at the transport level
+        and the payload carries the failure — retry against it:
+            {"success": false, "error": …, "traceback": …,
+             "stdout": …, "stderr": …}
+        "stdout" holds whatever was printed before the exception.
+
+        Long strings are clipped and marked "... [truncated, N chars total]".
 
     Side Effects
     ------------

@@ -1,15 +1,43 @@
 import os
+import ast
+import contextlib
+import io
 import json
+import math
 import socket
 import traceback
 import sys
 from qgis.core import *
 from qgis.gui import *
+# Bind the package itself so snippets can reach qgis.core/qgis.utils. Must come
+# after the star imports, which would otherwise shadow the name.
+import qgis
+import qgis.core
+import qgis.gui
 from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer, Qt, QSize, QVariant
 from qgis.PyQt.QtWidgets import QAction, QDockWidget, QVBoxLayout, QLabel, QPushButton, QSpinBox, QWidget
 from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.utils import active_plugins
 from datetime import datetime
+
+# Filename used when compiling user snippets, so tracebacks name the source.
+_EXEC_FILENAME = "<qgis_mcp>"
+
+# Cap on any single string field sent back to the client. A print() inside a
+# loop over a large layer would otherwise flood the caller's context.
+_MAX_OUTPUT_CHARS = 20_000
+
+# Sentinel: the snippet ended in a statement, so there is no value at all
+# (distinct from a final expression that evaluated to None).
+_NOTHING = object()
+
+
+def _truncate(text, limit=_MAX_OUTPUT_CHARS):
+    """Clip *text*, marking the clip so the reader knows it is a prefix."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n... [truncated, {len(text)} chars total]"
+
 
 # Simple helper to write debug lines to stderr so they appear in QGIS console
 def _dbg(msg: str):
@@ -260,54 +288,128 @@ class QgisMCPServer(QObject):
         else:
             return str(layer.type())
     
-    def execute_code(self, code, **kwargs):
-        """Execute arbitrary PyQGIS code and capture its return value.
+    def _build_exec_namespace(self):
+        """Assemble the namespace that user snippets are executed in."""
+        namespace = {}
+        for module in (qgis.core, qgis.gui):
+            namespace.update(
+                {k: v for k, v in vars(module).items() if not k.startswith("_")}
+            )
 
-        The provided *code* string is wrapped inside a temporary function so
-        that its ``return`` statement becomes the value that is sent back to
-        the MCP client.  Example snippet received from the client::
+        namespace.update({
+            "qgis": qgis,
+            "iface": self.iface,
+            "json": json,
+            "math": math,
+            "os": os,
+        })
+
+        # `processing` only exists once the Processing plugin has initialised.
+        try:
+            import processing
+            namespace["processing"] = processing
+        except ImportError:
+            pass
+
+        return namespace
+
+    def execute_code(self, code, **kwargs):
+        """Execute arbitrary PyQGIS code, notebook-style.
+
+        The snippet is executed as-is.  If its final statement is a bare
+        expression, that expression is evaluated and its value becomes the
+        ``result`` — the same semantics as a Jupyter cell::
 
             layer = QgsProject.instance().mapLayersByName("roads")[0]
-            return layer.featureCount()
+            layer.featureCount()
 
-        Whatever is returned by the snippet will be JSON-encoded and returned
-        to the client.
+        Anything the snippet prints is captured.  Errors are reported in the
+        payload rather than raised, so the caller always sees the traceback
+        alongside whatever output was produced before the failure.
 
-        If the value cannot be JSON-serialised the reply will be::
+        Returns a dict with keys::
 
-            {"error": "Non-JSON-serialisable result: …"}
+            success      bool
+            result       the JSON-encodable value of the final expression, else None
+            result_repr  repr() of the value when it is not JSON-encodable
+            stdout       captured stdout (truncated)
+            stderr       captured stderr (truncated)
+            error        exception message, when success is False
+            traceback    formatted traceback, when success is False
         """
+        namespace = self._build_exec_namespace()
+        stdout_capture = io.StringIO()
+        stderr_capture = io.StringIO()
+        result = _NOTHING
+
         try:
-            # Prepare execution namespace with common PyQGIS symbols
-            namespace = {
-                "qgis": Qgis,
-                "QgsProject": QgsProject,
-                "iface": self.iface,
-                "QgsApplication": QgsApplication,
-                "QgsVectorLayer": QgsVectorLayer,
-                "QgsRasterLayer": QgsRasterLayer,
-                "QgsCoordinateReferenceSystem": QgsCoordinateReferenceSystem,
-            }
+            # Parse first: a SyntaxError here has no user frames to report.
+            tree = ast.parse(code, filename=_EXEC_FILENAME, mode="exec")
 
-            # Wrap the incoming snippet in a function so it can use `return`
-            func_name = "_mcp_user_code"
-            wrapped_lines = [f"def {func_name}():"]
-            for line in code.splitlines():
-                wrapped_lines.append("    " + line)
-            wrapped_code = "\n".join(wrapped_lines)
+            # Split off a trailing bare expression so we can eval it for a value.
+            body, tail = tree.body, None
+            if body and isinstance(body[-1], ast.Expr):
+                body, tail = body[:-1], body[-1]
 
-            # Compile and execute the wrapper, then call the generated func
-            exec(wrapped_code, namespace)
-            result = namespace[func_name]()
+            # redirect_* restores the originals even if the snippet calls
+            # sys.exit(); QGIS's real stdout must never be left dangling.
+            with contextlib.redirect_stdout(stdout_capture), \
+                    contextlib.redirect_stderr(stderr_capture):
+                if body:
+                    exec(compile(ast.Module(body=body, type_ignores=[]),
+                                 _EXEC_FILENAME, "exec"), namespace)
+                if tail is not None:
+                    result = eval(compile(ast.Expression(body=tail.value),
+                                          _EXEC_FILENAME, "eval"), namespace)
+        except SyntaxError as e:
+            # No user frames ran; SyntaxError carries its own line/caret.
+            return self._exec_failure(e, stdout_capture, stderr_capture, tb=None)
+        except BaseException as e:
+            # BaseException, not Exception: a snippet calling sys.exit() raises
+            # SystemExit, which would otherwise tear down QGIS itself.
+            return self._exec_failure(e, stdout_capture, stderr_capture)
 
-            # Ensure the result can be JSON-serialised; if not, return an error
-            try:
-                json.dumps(result)
-                return {"return": result}
-            except TypeError:
-                return {"error": f"Non-JSON-serialisable result: {str(result)}"}
+        payload = {
+            "success": True,
+            "result": None,
+            "stdout": _truncate(stdout_capture.getvalue()),
+            "stderr": _truncate(stderr_capture.getvalue()),
+        }
+        if result is not _NOTHING:
+            payload.update(self._encode_result(result))
+        return payload
+
+    def _encode_result(self, result):
+        """JSON-encode a snippet's value, falling back to repr()."""
+        try:
+            json.dumps(result)
+            return {"result": result}
+        except (TypeError, ValueError):
+            pass
+
+        # A QgsVectorLayer's repr is informative; a failed repr is not fatal.
+        try:
+            rendered = repr(result)
         except Exception as e:
-            raise Exception(f"Code execution error: {str(e)}")
+            rendered = f"<unreprable {type(result).__name__}: {e}>"
+        return {"result": None, "result_repr": _truncate(rendered)}
+
+    def _exec_failure(self, exc, stdout_capture, stderr_capture, tb=_NOTHING):
+        """Build the payload for a snippet that raised."""
+        if tb is _NOTHING:
+            # Frame 0 is execute_code itself; the model only cares about its code.
+            tb = exc.__traceback__.tb_next if exc.__traceback__ else None
+        formatted = "".join(
+            traceback.format_exception(type(exc), exc, tb)
+        )
+        return {
+            "success": False,
+            "result": None,
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": _truncate(formatted),
+            "stdout": _truncate(stdout_capture.getvalue()),
+            "stderr": _truncate(stderr_capture.getvalue()),
+        }
     
     def add_vector_layer(self, path, name=None, provider="ogr", **kwargs):
         """Add a vector layer to the project"""
