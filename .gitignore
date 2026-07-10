@@ -1,12 +1,11 @@
-# Python-generated files
+# Python-generated files (the QGIS plugin is Python)
 __pycache__/
 *.py[oc]
+
+# Node
+node_modules/
+
 build/
 dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
 data/
 .DS_Store

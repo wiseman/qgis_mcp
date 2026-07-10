@@ -10,10 +10,10 @@
   "homepage": "https://github.com/wiseman/qgis_mcp",
   "mcpServers": {
     "qgis": {
-      "command": "uv",
+      "command": "npx",
       "args": [
-        "run",
-        "${CLAUDE_PLUGIN_ROOT}/src/qgis_mcp/qgis_mcp_server.py"
+        "-y",
+        "qgis-mcp"
       ]
     }
   }

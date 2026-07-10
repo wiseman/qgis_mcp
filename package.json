@@ -1,0 +1,37 @@
+{
+  "name": "qgis-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that controls a running QGIS instance via the QGIS MCP plugin",
+  "type": "module",
+  "license": "MIT",
+  "author": "John Wiseman <jjwiseman@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wiseman/qgis_mcp.git"
+  },
+  "homepage": "https://github.com/wiseman/qgis_mcp",
+  "keywords": [
+    "qgis",
+    "gis",
+    "mcp",
+    "geospatial"
+  ],
+  "bin": {
+    "qgis-mcp": "server/index.js"
+  },
+  "files": [
+    "server"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "build:mcpb": "node scripts/build_mcpb.js",
+    "install-qgis-plugin": "node scripts/install_qgis_plugin.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.0.0"
+  }
+}
