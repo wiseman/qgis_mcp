@@ -12,7 +12,9 @@ import { parseArgs } from "node:util";
 import os from "node:os";
 import path from "node:path";
 
-const PLUGIN_NAME = "qgis_mcp_plugin";
+const SOURCE_NAME = "qgis_mcp_plugin";
+// Avoid colliding with the different qgis_mcp_plugin in the QGIS catalog.
+const PLUGIN_NAME = "qgis_mcp_wiseman";
 
 function defaultProfilesRoot() {
   const home = os.homedir();
@@ -42,7 +44,7 @@ if (args.help) {
   process.exit(0);
 }
 
-const src = fileURLToPath(new URL(`../${PLUGIN_NAME}`, import.meta.url));
+const src = fileURLToPath(new URL(`../${SOURCE_NAME}`, import.meta.url));
 if (!existsSync(src)) {
   console.error(`error: ${src} not found`);
   process.exit(1);

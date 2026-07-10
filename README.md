@@ -37,52 +37,55 @@ The system consists of two main components:
    Model Context Protocol and connects to the QGIS plugin.
 
 Both pieces must be running: the QGIS plugin listens on `localhost:9876`, and
-the MCP server (started automatically by Claude) connects to it.
+the MCP server (started automatically by Claude) connects to it. The connection
+uses bounded, length-prefixed messages and verifies that both components have
+matching protocol and release versions before executing commands.
 
 ## Installation
 
 ### Prerequisites
 
 - QGIS 3.x
-- [Node.js](https://nodejs.org/) 18 or newer. (Claude Code users already have it
-  — Claude Code runs on Node. Claude Desktop users installing the `.mcpb`
-  extension don't need it at all; Desktop ships its own runtime.)
 - Claude Code or Claude Desktop
 
-### 1. Get the code
+You do not need Python, Node.js, Git, or a terminal for the standard QGIS and
+Claude Desktop installation.
+
+### 1. Install the QGIS plugin
+
+1. Download `qgis-mcp-plugin-<version>.zip` from the [latest
+   release](https://github.com/wiseman/qgis_mcp/releases/latest). Do not unzip
+   it.
+2. In QGIS, open `Plugins` -> `Manage and Install Plugins` -> `Install from
+   ZIP`, select the downloaded file, and click **Install Plugin**.
+3. Open `Plugins` -> `QGIS MCP` -> `QGIS MCP`, click **Start Server**, and tick
+   **Start server automatically when QGIS opens**.
+
+The server listens only on your computer. It allows the connected AI assistant
+to execute PyQGIS code, so only connect MCP clients you trust.
+
+This project is distinct from the similarly named plugin in the official QGIS
+catalog. Its internal plugin ID is `qgis_mcp_wiseman`, so installing this ZIP
+will not overwrite the catalog plugin. Disable other QGIS MCP plugins before
+starting this one because only one server can use the default port.
+
+<details>
+<summary>Install from source (developers)</summary>
+
+This method requires Git and Node.js 18 or newer.
 
 ```bash
 git clone https://github.com/wiseman/qgis_mcp.git
-```
-
-### 2. Install the QGIS plugin
-
-From the repo root:
-
-```bash
+cd qgis_mcp
 node scripts/install_qgis_plugin.js
 ```
 
 This copies the plugin into your default QGIS profile. Use `--profile NAME` for
-a non-default profile, or `--symlink` if you're developing the plugin. Then
-restart QGIS, go to `Plugins` -> `Manage and Install Plugins`, and enable **QGIS
-MCP**.
-
-<details>
-<summary>Manual installation</summary>
-
-Copy the [`qgis_mcp_plugin`](/qgis_mcp_plugin/) folder into your QGIS profile's
-`python/plugins` folder. You can find your profile folder in QGIS via `Settings`
--> `User Profiles` -> `Open Active Profile Folder`. Typical locations:
-
-- Windows: `C:\Users\USER\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins`
-- macOS: `~/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins`
-- Linux: `~/.local/share/QGIS/QGIS3/profiles/default/python/plugins`
-
-Then restart QGIS and enable the plugin as above.
+a non-default profile, or `--symlink` while developing. Restart QGIS after it
+finishes.
 </details>
 
-### 3. Connect Claude
+### 2. Connect Claude
 
 #### Claude Code (plugin — recommended)
 
@@ -104,18 +107,12 @@ claude mcp add qgis -- npx -y qgis-mcp
 
 #### Claude Desktop (extension bundle)
 
-Build the `.mcpb` extension bundle:
-
-```bash
-pnpm install   # or: npm install
-node scripts/build_mcpb.js
-```
-
-Then in Claude Desktop go to `Settings` > `Extensions` > `Advanced settings` >
-`Install Extension…` and select `dist/qgis-mcp-<version>.mcpb` (or just
-double-click the file). The bundle is fully self-contained — Desktop users need
-no other software. The QGIS host and port are configurable in the extension's
-settings.
+Download `qgis-mcp-<version>.mcpb` from the [latest
+release](https://github.com/wiseman/qgis_mcp/releases/latest). In Claude
+Desktop, go to `Settings` -> `Extensions` -> `Advanced settings` -> `Install
+Extension…` and select the downloaded file (or just double-click it). The bundle
+is fully self-contained. The QGIS host and port are configurable in the
+extension's settings.
 
 #### Claude Desktop (manual MCP config)
 
@@ -146,11 +143,14 @@ the manual MCP config.
 
 ### Publishing (maintainers)
 
-The Claude Code plugin and the manual configs resolve the server from npm, so
-they only work against the published
-[`qgis-mcp`](https://www.npmjs.com/package/qgis-mcp) package. To release: bump
-`version` in `package.json` (and `.claude-plugin/plugin.json` to match), `npm
-publish`, then rebuild the `.mcpb` with `node scripts/build_mcpb.js`.
+The Claude Code plugin and manual configs resolve the server from npm. To
+release, set the same version in `package.json`, `.claude-plugin/plugin.json`,
+`mcpb/manifest.json`, and `qgis_mcp_plugin/metadata.txt`, then run `npm run
+check`. Push a matching tag such as `v0.1.0`. The release workflow publishes
+the npm package and attaches both installable bundles to a GitHub release. It
+requires an `NPM_TOKEN` repository secret with publish access.
+
+For local builds, use `npm run build:qgis-plugin` and `npm run build:mcpb`.
 
 ## Usage
 
@@ -186,7 +186,8 @@ The server exposes a deliberately small set of four tools:
 - `qgis_get_layer_features` - Retrieve features from a vector layer. Returns
   full geometry for points but only centroid + bounding box for lines and
   polygons, to keep payloads small
-- `qgis_render_map` - Render the current map view to an image file
+- `qgis_render_map` - Render the current map view and return the PNG directly
+  to the MCP client; optionally save it to a path on the QGIS host
 
 ### Example commands
 

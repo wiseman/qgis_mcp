@@ -1,10 +1,13 @@
 import os
 import ast
+import base64
+import configparser
 import contextlib
 import io
 import json
 import math
 import socket
+import struct
 import traceback
 import sys
 from qgis.core import *
@@ -14,8 +17,8 @@ from qgis.gui import *
 import qgis
 import qgis.core
 import qgis.gui
-from qgis.PyQt.QtCore import QObject, pyqtSignal, QTimer, Qt, QSize, QVariant
-from qgis.PyQt.QtWidgets import QAction, QCheckBox, QDockWidget, QVBoxLayout, QLabel, QPushButton, QSpinBox, QWidget
+from qgis.PyQt.QtCore import QByteArray, QBuffer, QEventLoop, QIODevice, QObject, pyqtSignal, QTimer, Qt, QSize, QVariant
+from qgis.PyQt.QtWidgets import QAction, QCheckBox, QDockWidget, QVBoxLayout, QLabel, QMessageBox, QPushButton, QSpinBox, QWidget
 from qgis.PyQt.QtGui import QIcon, QColor
 from datetime import datetime
 
@@ -25,6 +28,55 @@ _EXEC_FILENAME = "<qgis_mcp>"
 # Cap on any single string field sent back to the client. A print() inside a
 # loop over a large layer would otherwise flood the caller's context.
 _MAX_OUTPUT_CHARS = 20_000
+
+# The socket protocol is deliberately versioned because the QGIS plugin and
+# MCP server are installed separately and must be updated together.
+_PROTOCOL_VERSION = 1
+_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+_FRAME_HEADER = struct.Struct(">I")
+
+# QGIS 4 / Qt 6 moved several long-standing enum members into scoped enums.
+try:
+    _LAYER_VECTOR = Qgis.LayerType.Vector
+    _LAYER_RASTER = Qgis.LayerType.Raster
+except AttributeError:
+    _LAYER_VECTOR = QgsMapLayer.VectorLayer
+    _LAYER_RASTER = QgsMapLayer.RasterLayer
+
+try:
+    _GEOMETRY_POINT = Qgis.GeometryType.Point
+except AttributeError:
+    _GEOMETRY_POINT = QgsWkbTypes.PointGeometry
+
+try:
+    _MESSAGE_CRITICAL = Qgis.MessageLevel.Critical
+except AttributeError:
+    _MESSAGE_CRITICAL = Qgis.Critical
+
+try:
+    _MAP_ANTIALIASING = Qgis.MapSettingsFlag.Antialiasing
+    _MAP_DRAW_LABELING = Qgis.MapSettingsFlag.DrawLabeling
+    _MAP_ADVANCED_EFFECTS = Qgis.MapSettingsFlag.UseAdvancedEffects
+except AttributeError:
+    _MAP_ANTIALIASING = QgsMapSettings.Antialiasing
+    _MAP_DRAW_LABELING = QgsMapSettings.DrawLabeling
+    _MAP_ADVANCED_EFFECTS = QgsMapSettings.UseAdvancedEffects
+
+try:
+    _RIGHT_DOCK_AREA = Qt.DockWidgetArea.RightDockWidgetArea
+    _ISO_DATE = Qt.DateFormat.ISODate
+except AttributeError:
+    _RIGHT_DOCK_AREA = Qt.RightDockWidgetArea
+    _ISO_DATE = Qt.ISODate
+
+
+def _plugin_version():
+    metadata = configparser.ConfigParser()
+    metadata.read(os.path.join(os.path.dirname(__file__), "metadata.txt"))
+    return metadata.get("general", "version", fallback="unknown")
+
+
+_PLUGIN_VERSION = _plugin_version()
 
 # Sentinel: the snippet ended in a statement, so there is no value at all
 # (distinct from a final expression that evaluated to None).
@@ -47,6 +99,8 @@ def _dbg(msg: str):
 
 class QgisMCPServer(QObject):
     """Server class to handle socket connections and execute QGIS commands"""
+    client_count_changed = pyqtSignal(int)
+    RENDER_TIMEOUT_SECONDS = 55
     
     def __init__(self, host='localhost', port=9876, iface=None):
         super().__init__()
@@ -55,14 +109,14 @@ class QgisMCPServer(QObject):
         self.iface = iface
         self.running = False
         self.socket = None
-        # Maintain multiple client sockets -> receive buffers
-        self.clients = {}  # dict mapping socket objects to bytes buffers
-        # Deprecated single-client attributes retained for backward compatibility
-        self.client = None  # kept but unused after multi-client refactor
+        self.last_error = None
+        # Each non-blocking client has independent receive and transmit queues.
+        self.clients = {}
         self.timer = None
     
     def start(self):
         """Start the server"""
+        self.last_error = None
         self.running = True
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -77,12 +131,13 @@ class QgisMCPServer(QObject):
             # Create a timer to process server operations
             self.timer = QTimer()
             self.timer.timeout.connect(self.process_server)
-            self.timer.start(100)  # 100ms interval
+            self.timer.start(25)
             
             _dbg("QGIS MCP server started and listening")
             return True
         except Exception as e:
-            QgsMessageLog.logMessage(f"Failed to start server: {str(e)}", "QGIS MCP", Qgis.Critical)
+            self.last_error = str(e)
+            QgsMessageLog.logMessage(f"Failed to start server: {self.last_error}", "QGIS MCP", _MESSAGE_CRITICAL)
             self.stop()
             return False
             
@@ -108,7 +163,7 @@ class QgisMCPServer(QObject):
             self.clients.pop(cli, None)
             
         self.socket = None
-        self.client = None
+        self.client_count_changed.emit(0)
         _dbg("QGIS MCP server stopped")
     
     def process_server(self):
@@ -133,7 +188,8 @@ class QgisMCPServer(QObject):
             try:
                 client, address = self.socket.accept()
                 client.setblocking(False)
-                self.clients[client] = b''
+                self.clients[client] = {"rx": b"", "tx": bytearray()}
+                self.client_count_changed.emit(len(self.clients))
                 _dbg(f"Accepted connection from {address}; active clients = {len(self.clients)}")
             except BlockingIOError:
                 break  # No more queued connections
@@ -146,9 +202,12 @@ class QgisMCPServer(QObject):
         # ------------------------------------------------------------------
         for cli in list(self.clients.keys()):  # iterate over a copy – may mutate
             try:
-                data = cli.recv(8192)
+                data = cli.recv(65536)
                 if data:
-                    self.clients[cli] += data
+                    state = self.clients[cli]
+                    state["rx"] += data
+                    if len(state["rx"]) > _MAX_MESSAGE_BYTES + _FRAME_HEADER.size:
+                        raise ValueError("Request exceeded the 32 MB message limit")
                 else:
                     # Peer has closed the connection
                     _dbg("Client disconnected")
@@ -162,35 +221,39 @@ class QgisMCPServer(QObject):
                 self._drop_client(cli)
                 continue
 
-            # Try to parse a full JSON object from the buffer
-            try:
-                buffer_str = self.clients[cli].decode('utf-8')
-                command = json.loads(buffer_str)
-                # Clear buffer only after successful parse
-                self.clients[cli] = b''
-            except json.JSONDecodeError:
-                # Incomplete transmission; wait for more bytes
+            state = self.clients.get(cli)
+            if not state:
                 continue
 
-            # Execute the requested command
-            response = self.execute_command(command)
+            # Process every complete length-prefixed request in the buffer.
+            while len(state["rx"]) >= _FRAME_HEADER.size:
+                message_length = _FRAME_HEADER.unpack(state["rx"][:4])[0]
+                if message_length > _MAX_MESSAGE_BYTES:
+                    self._drop_client(cli)
+                    break
+                frame_length = _FRAME_HEADER.size + message_length
+                if len(state["rx"]) < frame_length:
+                    break
+                payload = state["rx"][4:frame_length]
+                state["rx"] = state["rx"][frame_length:]
+                try:
+                    command = json.loads(payload.decode("utf-8"))
+                    response = self.execute_command(command)
+                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    response = {"status": "error", "message": f"Invalid request JSON: {e}"}
+                self._queue_response(cli, response)
 
-            # Serialize response, always returning JSON even on failures
-            try:
-                response_json = json.dumps(response, default=self._json_default)
-            except Exception as e:
-                error_payload = {
-                    "status": "error",
-                    "message": f"Serialization error: {str(e)}"
-                }
-                response_json = json.dumps(error_payload)
-
-            # Send back to the originating client
-            try:
-                cli.sendall(response_json.encode('utf-8'))
-            except Exception as e:
-                _dbg(f"Error sending response: {str(e)} – dropping client")
-                self._drop_client(cli)
+            # Flush as much queued output as the non-blocking socket accepts.
+            state = self.clients.get(cli)
+            if state and state["tx"]:
+                try:
+                    sent = cli.send(state["tx"])
+                    del state["tx"][:sent]
+                except BlockingIOError:
+                    pass
+                except Exception as e:
+                    _dbg(f"Error sending response: {str(e)} – dropping client")
+                    self._drop_client(cli)
 
     def execute_command(self, command):
         """Execute a command"""
@@ -231,14 +294,18 @@ class QgisMCPServer(QObject):
     
     # Command handlers
     def ping(self, **kwargs):
-        """Simple ping command"""
-        return {"pong": True}
+        """Return compatibility information for the MCP server handshake."""
+        return {
+            "pong": True,
+            "protocol_version": _PROTOCOL_VERSION,
+            "plugin_version": _PLUGIN_VERSION,
+        }
     
     def _get_layer_type(self, layer):
         """Helper to get layer type as string"""
-        if layer.type() == QgsMapLayer.VectorLayer:
+        if layer.type() == _LAYER_VECTOR:
             return f"vector_{layer.geometryType()}"
-        elif layer.type() == QgsMapLayer.RasterLayer:
+        elif layer.type() == _LAYER_RASTER:
             return "raster"
         else:
             return str(layer.type())
@@ -385,7 +452,7 @@ class QgisMCPServer(QObject):
         
         for layer_id, layer in project.mapLayers().items():
             # Safely extract attribute field names only for vector layers
-            if layer.type() == QgsMapLayer.VectorLayer:
+            if layer.type() == _LAYER_VECTOR:
                 field_names = [str(field.name()) for field in layer.fields()]
             else:
                 field_names = []
@@ -400,12 +467,12 @@ class QgisMCPServer(QObject):
             }
             
             # Add type-specific information
-            if layer.type() == QgsMapLayer.VectorLayer:
+            if layer.type() == _LAYER_VECTOR:
                 layer_info.update({
                     "feature_count": layer.featureCount(),
                     "geometry_type": layer.geometryType()
                 })
-            elif layer.type() == QgsMapLayer.RasterLayer:
+            elif layer.type() == _LAYER_RASTER:
                 layer_info.update({
                     "width": layer.width(),
                     "height": layer.height()
@@ -422,7 +489,7 @@ class QgisMCPServer(QObject):
         if layer_id in project.mapLayers():
             layer = project.mapLayer(layer_id)
             
-            if layer.type() != QgsMapLayer.VectorLayer:
+            if layer.type() != _LAYER_VECTOR:
                 raise Exception(f"Layer is not a vector layer: {layer_id}")
             _dbg(f"got layer: {layer}")
             features = []
@@ -441,7 +508,7 @@ class QgisMCPServer(QObject):
                     geom_obj = feature.geometry()
                     try:
                         # If the geometry is a point (or multipoint with exactly one point), return full WKT
-                        if geom_obj.type() == QgsWkbTypes.PointGeometry:
+                        if geom_obj.type() == _GEOMETRY_POINT:
                             geom = {
                                 "type": "point",
                                 "wkt": str(geom_obj.asWkt(precision=4))
@@ -480,11 +547,14 @@ class QgisMCPServer(QObject):
         else:
             raise Exception(f"Layer not found: {layer_id}")
     
-    def render_map(self, path, width=800, height=600, include_hidden=False, transparent=False, **kwargs):
+    def render_map(self, path=None, width=800, height=600, include_hidden=False, transparent=False, **kwargs):
         """
         Render the current map view to an image, respecting layer-tree order & visibility.
         """
         try:
+            width, height = int(width), int(height)
+            if not (1 <= width <= 2048 and 1 <= height <= 2048):
+                raise Exception("Width and height must each be between 1 and 2048 pixels")
             project = QgsProject.instance()
             root = project.layerTreeRoot()
 
@@ -511,20 +581,45 @@ class QgisMCPServer(QObject):
             ms.setOutputDpi(canvas_ms.outputDpi())
             ms.setTransformContext(project.transformContext())
             ms.setDestinationCrs(canvas_ms.destinationCrs())
-            ms.setFlag(QgsMapSettings.Antialiasing, True)
-            ms.setFlag(QgsMapSettings.DrawLabeling, True)  # labels, if any
-            ms.setFlag(QgsMapSettings.UseAdvancedEffects, True)  # blend modes, layer opacity, etc.
+            ms.setFlag(_MAP_ANTIALIASING, True)
+            ms.setFlag(_MAP_DRAW_LABELING, True)  # labels, if any
+            ms.setFlag(_MAP_ADVANCED_EFFECTS, True)  # blend modes, layer opacity, etc.
 
             # --- 3) Render ---
             job = QgsMapRendererParallelJob(ms)
+            loop = QEventLoop()
+            timed_out = []
+            job.finished.connect(loop.quit)
+            timeout_timer = QTimer()
+            timeout_timer.setSingleShot(True)
+            timeout_timer.timeout.connect(lambda: (timed_out.append(True), loop.quit()))
+            timeout_timer.start(self.RENDER_TIMEOUT_SECONDS * 1000)
             job.start()
-            job.waitForFinished()
+            loop.exec()
+            timeout_timer.stop()
+            if timed_out:
+                job.cancelWithoutBlocking()
+                job.waitForFinished()
+                raise Exception(f"Render timed out after {self.RENDER_TIMEOUT_SECONDS} seconds")
 
             img = job.renderedImage()
-            if not img.save(path):
+            if path and not img.save(path):
                 raise Exception(f"Failed to save rendered image to {path}")
 
+            encoded = QByteArray()
+            buffer = QBuffer(encoded)
+            write_only = (
+                QIODevice.WriteOnly
+                if hasattr(QIODevice, "WriteOnly")
+                else QIODevice.OpenModeFlag.WriteOnly
+            )
+            if not buffer.open(write_only) or not img.save(buffer, "PNG"):
+                raise Exception("Failed to encode rendered image as PNG")
+            buffer.close()
+
             return {"rendered": True, "path": path, "width": width, "height": height,
+                    "mime_type": "image/png",
+                    "image_base64": base64.b64encode(bytes(encoded)).decode("ascii"),
                     "layers_drawn": [lyr.name() for lyr in ordered_layers]}
 
         except Exception as e:
@@ -549,12 +644,32 @@ class QgisMCPServer(QObject):
 
             # Add more specific conversions as needed (e.g. QDate → ISO string)
             if hasattr(obj, "toString"):
-                return obj.toString(Qt.ISODate)  # QDate / QDateTime / etc.
+                return obj.toString(_ISO_DATE)  # QDate / QDateTime / etc.
 
             # Fallback – stringify unknown objects
             return str(obj)
         except Exception:
             return str(obj)
+
+    def _queue_response(self, cli, response):
+        """Serialize and frame a response into a client's transmit queue."""
+        try:
+            payload = json.dumps(response, default=self._json_default).encode("utf-8")
+        except Exception as e:
+            payload = json.dumps({
+                "status": "error",
+                "message": f"Serialization error: {e}",
+            }).encode("utf-8")
+
+        if len(payload) > _MAX_MESSAGE_BYTES:
+            payload = json.dumps({
+                "status": "error",
+                "message": f"Response exceeded the {_MAX_MESSAGE_BYTES // (1024 * 1024)} MB limit",
+            }).encode("utf-8")
+        state = self.clients.get(cli)
+        if state is not None:
+            state["tx"].extend(_FRAME_HEADER.pack(len(payload)))
+            state["tx"].extend(payload)
 
     def _drop_client(self, cli):
         """Close and remove a client socket from the registry."""
@@ -563,11 +678,13 @@ class QgisMCPServer(QObject):
         except Exception:
             pass
         self.clients.pop(cli, None)
+        self.client_count_changed.emit(len(self.clients))
 
 
 class QgisMCPDockWidget(QDockWidget):
     """Dock widget for the QGIS MCP plugin"""
     closed = pyqtSignal()
+    server_status_changed = pyqtSignal(bool, int, int)
     
     def __init__(self, iface):
         super().__init__("QGIS MCP")
@@ -621,6 +738,7 @@ class QgisMCPDockWidget(QDockWidget):
         if not self.server:
             port = self.port_spin.value()
             self.server = QgisMCPServer(port=port, iface=self.iface)
+            self.server.client_count_changed.connect(self._update_client_count)
             
         if self.server.start():
             QgsSettings().setValue("qgis_mcp/port", self.server.port)
@@ -628,6 +746,15 @@ class QgisMCPDockWidget(QDockWidget):
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
             self.port_spin.setEnabled(False)
+            self.server_status_changed.emit(True, self.server.port, 0)
+        else:
+            self.status_label.setText(
+                f"Server: Failed to start on port {self.server.port}: {self.server.last_error}"
+            )
+            self.iface.messageBar().pushCritical(
+                "QGIS MCP",
+                f"Could not start on port {self.server.port}: {self.server.last_error}",
+            )
     
     def stop_server(self):
         """Stop the server"""
@@ -639,6 +766,17 @@ class QgisMCPDockWidget(QDockWidget):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.port_spin.setEnabled(True)
+        self.server_status_changed.emit(False, self.port_spin.value(), 0)
+
+    def _update_client_count(self, count):
+        """Show whether an MCP client is actually connected."""
+        if not self.server or not self.server.running:
+            return
+        noun = "client" if count == 1 else "clients"
+        self.status_label.setText(
+            f"Server: Running on port {self.server.port} — {count} {noun} connected"
+        )
+        self.server_status_changed.emit(True, self.server.port, count)
         
     def closeEvent(self, event):
         """Stop server on dock close"""
@@ -663,6 +801,7 @@ class QgisMCPPlugin:
             self.iface.mainWindow()
         )
         self.action.setCheckable(True)
+        self.action.setToolTip("QGIS MCP server stopped")
         self.action.triggered.connect(self.toggle_dock)
         
         # Add to plugins menu and toolbar
@@ -675,12 +814,42 @@ class QgisMCPPlugin:
             self.dock_widget.hide()
             self.dock_widget.start_server()
 
+        QTimer.singleShot(750, self._show_first_run_help)
+
+    def _show_first_run_help(self):
+        """Give a newly installed user an in-QGIS path to a working setup."""
+        settings = QgsSettings()
+        if settings.value("qgis_mcp/first_run_complete", False, type=bool):
+            return
+        settings.setValue("qgis_mcp/first_run_complete", True)
+        QMessageBox.information(
+            self.iface.mainWindow(),
+            "QGIS MCP installed",
+            "QGIS MCP is ready.\n\n"
+            "1. Open Plugins -> QGIS MCP -> QGIS MCP.\n"
+            "2. Click Start Server.\n"
+            "3. Enable automatic startup if you want QGIS to reconnect next time.\n"
+            "4. Configure your MCP client using the project README.\n\n"
+            "The status panel shows when an MCP client is actually connected.",
+        )
+
     def _ensure_dock(self):
         """Create the dock widget if it doesn't exist yet."""
         if not self.dock_widget:
             self.dock_widget = QgisMCPDockWidget(self.iface)
-            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
+            self.iface.addDockWidget(_RIGHT_DOCK_AREA, self.dock_widget)
             self.dock_widget.closed.connect(self.dock_closed)
+            self.dock_widget.server_status_changed.connect(self._update_action_status)
+
+    def _update_action_status(self, running, port, client_count):
+        """Reflect server and connection state in the persistent toolbar action."""
+        if running:
+            noun = "client" if client_count == 1 else "clients"
+            self.action.setToolTip(
+                f"QGIS MCP running on port {port} — {client_count} {noun} connected"
+            )
+        else:
+            self.action.setToolTip("QGIS MCP server stopped")
 
     def toggle_dock(self, checked):
         """Toggle the dock widget"""

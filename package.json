@@ -26,8 +26,11 @@
     "node": ">=18"
   },
   "scripts": {
+    "check": "node scripts/check_release.js",
+    "test": "node --test",
     "start": "node server/index.js",
     "build:mcpb": "node scripts/build_mcpb.js",
+    "build:qgis-plugin": "node scripts/build_qgis_plugin.js",
     "install-qgis-plugin": "node scripts/install_qgis_plugin.js"
   },
   "dependencies": {

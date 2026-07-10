@@ -1,0 +1,19 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm run check
+      - run: npm test
+      - run: python3 -m py_compile qgis_mcp_plugin/qgis_mcp_plugin.py qgis_mcp_plugin/__init__.py
+      - run: npm run build:qgis-plugin
+      - run: unzip -l dist/qgis-mcp-plugin-*.zip

@@ -2,11 +2,11 @@
 // QGIS MCP server: a thin stdio<->TCP proxy. Each MCP tool call is forwarded
 // as {"type": <command>, "params": {...}} to the socket server that the QGIS
 // MCP plugin runs inside QGIS, and the JSON reply is returned as text.
-import net from "node:net";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { QgisClient } from "./qgis_client.js";
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -20,83 +20,18 @@ function dbg(msg) {
   }
 }
 
-let socket = null;
-// The wire protocol has no message ids, so commands must not interleave:
-// each command waits for the previous one's response.
-let queue = Promise.resolve();
+const qgis = new QgisClient({ host: HOST, port: PORT, version: pkg.version, debug: dbg });
 
-function getConnection() {
-  if (socket && !socket.destroyed) {
-    return Promise.resolve(socket);
+function sendCommand(type, params = {}, timeoutMs) {
+  dbg(`sending command: ${type}`);
+  return qgis.send(type, params, timeoutMs);
+}
+
+function unwrapResponse(response) {
+  if (!response || response.status !== "success") {
+    throw new Error(response?.message || "QGIS returned no response");
   }
-  return new Promise((resolve, reject) => {
-    dbg(`connecting to QGIS at ${HOST}:${PORT}`);
-    const sock = net.createConnection({ host: HOST, port: PORT });
-    // Don't let the QGIS connection keep the process alive once the MCP
-    // client closes stdin.
-    sock.unref();
-    sock.once("connect", () => {
-      dbg("TCP connection established");
-      sock.on("close", () => {
-        if (socket === sock) socket = null;
-      });
-      socket = sock;
-      resolve(sock);
-    });
-    sock.once("error", (err) => {
-      dbg(`connection error: ${err.message}`);
-      reject(new Error("Could not connect to QGIS. Make sure the QGIS plugin is running."));
-    });
-  });
-}
-
-function sendCommand(type, params = {}) {
-  const run = queue.then(() => doSendCommand(type, params));
-  queue = run.then(
-    () => {},
-    () => {}
-  );
-  return run;
-}
-
-function doSendCommand(type, params) {
-  return getConnection().then(
-    (sock) =>
-      new Promise((resolve, reject) => {
-        const chunks = [];
-        const cleanup = () => {
-          sock.removeListener("data", onData);
-          sock.removeListener("close", onClose);
-          sock.removeListener("error", onError);
-        };
-        const onData = (chunk) => {
-          chunks.push(chunk);
-          // The plugin sends one JSON object with no framing; accumulate
-          // until the buffer parses.
-          let response;
-          try {
-            response = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          } catch {
-            return;
-          }
-          cleanup();
-          resolve(response);
-        };
-        const onClose = () => {
-          cleanup();
-          reject(new Error("Connection to QGIS closed unexpectedly. Make sure the QGIS plugin is running."));
-        };
-        const onError = (err) => {
-          cleanup();
-          reject(err);
-        };
-        sock.on("data", onData);
-        sock.once("close", onClose);
-        sock.once("error", onError);
-        dbg(`sending command: ${type}`);
-        sock.write(JSON.stringify({ type, params }));
-      })
-  );
+  return response.result;
 }
 
 // Drop undefined values so omitted optional args stay out of params: the QGIS
@@ -112,11 +47,13 @@ function prune(args) {
 const TOOLS = [
   {
     name: "qgis_get_layers",
+    title: "List QGIS layers",
     command: "get_layers",
     schema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     description: `List every layer currently loaded in the project.
 
-Returns a JSON string containing an array of layer descriptors. Each
+Returns an array of layer descriptors as structured output. Each
 descriptor includes:
 
 • id – layer id
@@ -130,16 +67,18 @@ descriptor includes:
   },
   {
     name: "qgis_get_layer_features",
+    title: "Inspect QGIS layer features",
     command: "get_layer_features",
     schema: {
       layer_id: z.string().describe("Target vector layer id."),
       limit: z.number().int().default(10).describe("Maximum number of features to return (default 10)."),
     },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     description: `Retrieve attribute and lightweight geometry data for a subset of features
 from a vector layer.  Useful for quickly inspecting layer attributes without
 transferring full geometries for large features.
 
-Returns a JSON string with the keys:
+Returns structured output with the keys:
 
 • layer_id – id of the queried layer
 • feature_count – total number of features in the layer
@@ -173,25 +112,31 @@ spatial summary for lines and polygons.`,
   },
   {
     name: "qgis_render_map",
+    title: "Render the QGIS map",
     command: "render_map",
     schema: {
-      path: z.string().describe("Output image path (format inferred from extension)."),
-      width: z.number().int().default(800).describe("Image width in pixels, default 800."),
-      height: z.number().int().default(600).describe("Image height in pixels, default 600."),
+      path: z.string().optional().describe("Optional output image path on the QGIS host."),
+      width: z.number().int().min(1).max(2048).default(800).describe("Image width in pixels, default 800."),
+      height: z.number().int().min(1).max(2048).default(600).describe("Image height in pixels, default 600."),
     },
-    description: `Export the current map view to an image on disk.
+    timeoutMs: 60_000,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    description: `Render the current map view and return the PNG image inline.
 
-Returns JSON {rendered: true, path, width, height}
+If path is supplied, also saves the image on the QGIS host. Returns the image
+plus structured metadata {rendered, path, width, height, layers_drawn}.
 
-Side effects: renders the map and writes an image file; does not alter
-project data.`,
+Side effects: does not alter project data; writes a file only when path is supplied.`,
   },
   {
     name: "qgis_execute_code",
+    title: "Execute PyQGIS code",
     command: "execute_code",
     schema: {
       code: z.string().describe("Python source code string."),
     },
+    timeoutMs: 60_000,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     description: `Execute arbitrary Python code inside the QGIS Python interpreter.
 
 This is the primary tool for working with QGIS: everything except layer
@@ -227,7 +172,7 @@ plus:
 The code runs on the QGIS main thread and blocks the UI while it does, so
 keep snippets bounded; do not start long loops or wait on input.
 
-Returns JSON {"status":"success","result": <payload>}, where <payload> is:
+Returns this structured payload directly:
 
 On success:
     {"success": true, "result": <value>, "stdout": …, "stderr": …}
@@ -255,10 +200,29 @@ const server = new McpServer(
 for (const tool of TOOLS) {
   server.registerTool(
     tool.name,
-    { description: tool.description, inputSchema: tool.schema },
+    {
+      title: tool.title,
+      description: tool.description,
+      inputSchema: tool.schema,
+      outputSchema: { result: z.unknown() },
+      annotations: tool.annotations,
+    },
     async (args) => {
-      const result = await sendCommand(tool.command, prune(args));
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const result = unwrapResponse(await sendCommand(tool.command, prune(args), tool.timeoutMs));
+      if (tool.command === "render_map") {
+        const { image_base64: data, mime_type: mimeType, ...metadata } = result;
+        return {
+          content: [
+            { type: "image", data, mimeType },
+            { type: "text", text: JSON.stringify(metadata, null, 2) },
+          ],
+          structuredContent: { result: metadata },
+        };
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: { result },
+      };
     }
   );
 }
@@ -268,4 +232,7 @@ dbg("qgis-mcp server running on stdio");
 
 // Exit when the MCP client disconnects (stdin closes); nothing useful can
 // happen after that.
-process.stdin.on("close", () => process.exit(0));
+process.stdin.on("close", () => {
+  qgis.close();
+  process.exit(0);
+});
