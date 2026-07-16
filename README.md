@@ -1,22 +1,22 @@
-# QGIS-MCP - QGIS Model Context Protocol Integration
+# WAI QGIS MCP
 
-QGIS-MCP connects [QGIS](https://qgis.org/) to [Claude](https://claude.ai/)
-through the Model Context Protocol (MCP), allowing Claude to directly interact
-with and control QGIS. This integration enables prompt-assisted project
-creation, layer loading, code execution and more.
+WAI QGIS MCP connects [QGIS](https://qgis.org/) to trusted AI assistants through
+the Model Context Protocol (MCP). It enables prompt-assisted project creation,
+layer loading, inspection, map rendering, and PyQGIS code execution. WAI stands
+for Wiseman Applied Intelligence.
 
 This is a fork of [jjsantos01/qgis_mcp](https://github.com/jjsantos01/qgis_mcp)
 (which was in turn strongly based on the
 [BlenderMCP](https://github.com/ahujasid/blender-mcp/tree/main) project by
 [Siddharth Ahuja](https://x.com/sidahuj)). It has diverged from upstream: the
-MCP server is a Node.js package distributed via npm, `execute_code` has notebook
-semantics and captured output, feature geometry is lightweight, multiple clients
-can connect simultaneously, and the tool surface is trimmed to four tools
-(project and layer management happen through `execute_code`).
+MCP server is a Node.js package distributed via npm, `execute_code` supports
+trailing-expression results and captured output, feature geometry is lightweight,
+multiple clients can connect simultaneously, and the tool surface is trimmed to
+five tools (project and layer changes happen through `execute_code`).
 
 ## Features
 
-- **Two-way communication**: Connect Claude to QGIS through a socket-based
+- **Two-way communication**: Connect an MCP client to QGIS through a socket-based
   server.
 - **Project manipulation**: Create, load and save projects in QGIS.
 - **Layer manipulation**: Add and remove vector or raster layers, list layers
@@ -37,16 +37,17 @@ The system consists of two main components:
    Model Context Protocol and connects to the QGIS plugin.
 
 Both pieces must be running: the QGIS plugin listens on `localhost:9876`, and
-the MCP server (started automatically by Claude) connects to it. The connection
-uses bounded, length-prefixed messages and verifies that both components have
-matching protocol and release versions before executing commands.
+the MCP server (started automatically by your MCP client) connects to it. The
+connection uses bounded, length-prefixed messages and verifies that both
+components have matching protocol and release versions before executing
+commands.
 
 ## Installation
 
 ### Prerequisites
 
 - QGIS 3.x
-- Claude Code or Claude Desktop
+- An MCP client such as Codex, Claude Code, or Claude Desktop
 
 You do not need Python, Node.js, Git, or a terminal for the standard QGIS and
 Claude Desktop installation.
@@ -58,16 +59,11 @@ Claude Desktop installation.
    it.
 2. In QGIS, open `Plugins` -> `Manage and Install Plugins` -> `Install from
    ZIP`, select the downloaded file, and click **Install Plugin**.
-3. Open `Plugins` -> `QGIS MCP` -> `QGIS MCP`, click **Start Server**, and tick
-   **Start server automatically when QGIS opens**.
+3. Open `Plugins` -> `WAI QGIS MCP` -> `WAI QGIS MCP`, click **Start Server**,
+   and tick **Start server automatically when QGIS opens**.
 
 The server listens only on your computer. It allows the connected AI assistant
 to execute PyQGIS code, so only connect MCP clients you trust.
-
-This project is distinct from the similarly named plugin in the official QGIS
-catalog. Its internal plugin ID is `qgis_mcp_wiseman`, so installing this ZIP
-will not overwrite the catalog plugin. Disable other QGIS MCP plugins before
-starting this one because only one server can use the default port.
 
 <details>
 <summary>Install from source (developers)</summary>
@@ -85,7 +81,17 @@ a non-default profile, or `--symlink` while developing. Restart QGIS after it
 finishes.
 </details>
 
-### 2. Connect Claude
+### 2. Connect an MCP client
+
+#### Codex
+
+```bash
+codex mcp add qgis -- npx -y qgis-mcp
+```
+
+Restart Codex if it is already running. Use `/mcp` to confirm that the `qgis`
+server exposes five tools, then call `qgis_get_project` to verify the connection
+and inspect the current project.
 
 #### Claude Code (plugin — recommended)
 
@@ -135,18 +141,18 @@ Go to `Claude` > `Settings` > `Developer` > `Edit Config` > `claude_desktop_conf
 
 #### Non-default host or port
 
-If you change the port in the QGIS MCP panel (default 9876), tell the MCP server
-via the `QGIS_MCP_HOST` / `QGIS_MCP_PORT` environment variables. The `.mcpb`
-extension exposes these as settings in Claude Desktop; for the other install
-methods, set them in the environment Claude runs in, or add an `"env"` block to
-the manual MCP config.
+If you change the port in the WAI QGIS MCP panel (default 9876), tell the MCP
+server via the `QGIS_MCP_HOST` / `QGIS_MCP_PORT` environment variables. The
+`.mcpb` extension exposes these as settings in Claude Desktop; for the other
+install methods, set them in the environment Claude runs in, or add an `"env"`
+block to the manual MCP config.
 
 ### Publishing (maintainers)
 
 The Claude Code plugin and manual configs resolve the server from npm. To
 release, set the same version in `package.json`, `.claude-plugin/plugin.json`,
 `mcpb/manifest.json`, and `qgis_mcp_plugin/metadata.txt`, then run `npm run
-check`. Push a matching tag such as `v0.1.0`. The release workflow publishes
+check`. Push a matching tag such as `v0.2.0`. The release workflow publishes
 the npm package and attaches both installable bundles to a GitHub release. It
 requires an `NPM_TOKEN` repository secret with publish access.
 
@@ -156,31 +162,42 @@ For local builds, use `npm run build:qgis-plugin` and `npm run build:mcpb`.
 
 ### Starting the connection
 
-1. In QGIS, go to `Plugins` -> `QGIS MCP` -> `QGIS MCP`
-    ![plugins menu](/assets/imgs/qgis-plugins-menu.png)
+1. In QGIS, go to `Plugins` -> `WAI QGIS MCP` -> `WAI QGIS MCP`
 2. Click "Start Server"
-    ![start server](/assets/imgs/qgis-mcp-start-server.png)
 
 Tick "Start server automatically when QGIS opens" and you never have to do this
 again — the server starts on QGIS launch, on the last port you used.
 
-### Using with Claude
+For troubleshooting, enable **Log diagnostics to the QGIS Message Log** in the
+plugin panel. Diagnostics include connection events, command names, durations,
+and exception summaries. Code, command parameters, attributes, and geometries
+are not logged.
 
-Once the QGIS server is running and the MCP server is configured, Claude will
-have access to the QGIS tools.
+### Using with an AI assistant
 
-![Claude tools](assets/imgs/claude-available-tools.png)
+Once the QGIS server is running and the MCP server is configured, the assistant
+will have access to the QGIS tools.
 
 #### Tools
 
-The server exposes a deliberately small set of four tools:
+The server exposes a deliberately small set of five tools:
 
-- `qgis_execute_code` - Execute arbitrary PyQGIS code with notebook semantics:
-  the last bare expression becomes the result, `print()` output is captured, and
-  exceptions are returned in-band with tracebacks. This is the workhorse —
+- `qgis_get_project` - Inspect the current project, canvas, active layer, layer
+  counts, and integration versions. This is the recommended first call
+- `qgis_execute_code` - Execute a self-contained PyQGIS snippet: the last bare
+  expression becomes the result, `print()` output is captured, and exceptions
+  are returned with tracebacks. Every call has a fresh namespace, so variables
+  and imports do not persist. This is the workhorse —
   loading/saving projects, adding/removing layers, and running Processing
   algorithms all happen here, and the tool description includes recipes for the
-  common operations
+  common operations. Execution is not transactional, so changes made before an
+  exception remain in QGIS. Qt APIs must be imported explicitly, for example:
+
+  ```python
+  from qgis.PyQt.QtCore import QVariant, Qt
+  from qgis.PyQt.QtGui import QColor, QFont
+  ```
+
 - `qgis_get_layers` - List all layers in the current project, including their
   fields
 - `qgis_get_layer_features` - Retrieve features from a vector layer. Returns
@@ -195,7 +212,7 @@ This is the example prompt used for the original [demo](https://x.com/jjsantoso/
 
 ```plain
 You have access to the tools to work with QGIS. You will do the following:
-    1. Ping to check the connection. If it works, continue with the following steps.
+    1. Inspect the current project to check the connection. If it works, continue with the following steps.
     2. Create a new project and save it at: "C:/Users/USER/GitHub/qgis_mcp/data/cdmx.qgz"
     3. Load the vector layer: "C:/Users/USER/GitHub/qgis_mcp/data/cdmx/mgpc_2019.shp" and name it "Colonias".
     4. Load the raster layer: "C:/Users/USER/GitHub/qgis_mcp/data/09014.tif" and name it "BJ"

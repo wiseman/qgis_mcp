@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Install the QGIS MCP plugin into a QGIS user profile.
+// Install the WAI QGIS MCP plugin into a QGIS user profile.
 //
 // Copies (or symlinks, with --symlink) the qgis_mcp_plugin folder into the
 // QGIS profile's python/plugins directory. After running this, restart QGIS
-// and enable "QGIS MCP" in Plugins -> Manage and Install Plugins.
+// and enable "WAI QGIS MCP" in Plugins -> Manage and Install Plugins.
 //
 // Usage: node scripts/install_qgis_plugin.js [--profile NAME] [--symlink]
 import { cpSync, existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
@@ -93,5 +93,5 @@ if (args.symlink) {
 
 console.log("\nNext steps:");
 console.log("  1. Restart QGIS");
-console.log('  2. Plugins -> Manage and Install Plugins -> enable "QGIS MCP"');
-console.log("  3. Plugins -> QGIS MCP -> QGIS MCP -> Start Server");
+console.log('  2. Plugins -> Manage and Install Plugins -> enable "WAI QGIS MCP"');
+console.log("  3. Plugins -> WAI QGIS MCP -> WAI QGIS MCP -> Start Server");

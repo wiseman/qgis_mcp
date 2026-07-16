@@ -1,8 +1,8 @@
 [general]
-name=QGIS MCP
-description=Socket server that lets an MCP client (e.g. Claude) control QGIS
+name=WAI QGIS MCP
+description=Socket server that lets a trusted MCP client control QGIS
 about=This minimal-tool variant connects QGIS to trusted local AI assistants through the Model Context Protocol. It listens only on the local machine and supports project and layer management, Processing algorithms, map rendering, and PyQGIS code execution.
-version=0.1.0
+version=0.2.0
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
 author=John Wiseman

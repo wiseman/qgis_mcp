@@ -1,10 +1,10 @@
 {
   "manifest_version": "0.3",
   "name": "qgis-mcp",
-  "display_name": "QGIS MCP",
-  "version": "0.1.0",
-  "description": "Control QGIS from Claude: load projects, manage layers, run processing algorithms, render maps, and execute PyQGIS code.",
-  "long_description": "Connects Claude to a running QGIS instance through the QGIS MCP plugin's socket server. Requires the QGIS MCP plugin to be installed and started in QGIS (see https://github.com/wiseman/qgis_mcp). Everything else is bundled — no other software needed.",
+  "display_name": "WAI QGIS MCP",
+  "version": "0.2.0",
+  "description": "Control QGIS from an AI assistant: inspect projects, manage layers, run processing algorithms, render maps, and execute PyQGIS code.",
+  "long_description": "Connects an MCP client to a running QGIS instance through the WAI QGIS MCP plugin's socket server. Requires the WAI QGIS MCP plugin to be installed and started in QGIS (see https://github.com/wiseman/qgis_mcp). Everything else is bundled — no other software needed.",
   "author": {
     "name": "John Wiseman",
     "email": "jjwiseman@gmail.com"
@@ -28,14 +28,14 @@
     "host": {
       "type": "string",
       "title": "QGIS host",
-      "description": "Host where the QGIS MCP plugin's socket server is listening",
+      "description": "Host where the WAI QGIS MCP plugin's socket server is listening",
       "default": "localhost",
       "required": false
     },
     "port": {
       "type": "number",
       "title": "QGIS port",
-      "description": "Port of the QGIS MCP plugin's socket server (set in the QGIS MCP panel)",
+      "description": "Port of the WAI QGIS MCP plugin's socket server (set in the WAI QGIS MCP panel)",
       "default": 9876,
       "required": false
     }

@@ -46,6 +46,19 @@ function prune(args) {
 
 const TOOLS = [
   {
+    name: "qgis_get_project",
+    title: "Inspect the QGIS project",
+    command: "get_project",
+    schema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    description: `Return bounded metadata about the current QGIS project and map canvas.
+
+Use this as the first call when orienting to a QGIS session. The result includes
+the project filename, title, dirty state, home path, project CRS, layer counts,
+active layer, canvas CRS/extent/scale/rotation, and WAI QGIS MCP plugin and
+protocol versions. Use qgis_get_layers for the full layer inventory.`,
+  },
+  {
     name: "qgis_get_layers",
     title: "List QGIS layers",
     command: "get_layers",
@@ -151,12 +164,22 @@ Common operations:
     iface.setActiveLayer(layer); iface.zoomToActiveLayer()     # zoom to layer
     processing.run("native:centroids", {"INPUT": …, "OUTPUT": …})  # Processing algorithm
 
+Qt classes are not implicitly imported. Import the exact Qt APIs each snippet
+needs, for example:
+
+    from qgis.PyQt.QtCore import QVariant, Qt
+    from qgis.PyQt.QtGui import QColor, QFont
+
 Execution context
 -----------------
-The code runs like a Jupyter cell.  If its last statement is a bare
-expression, that expression's value is returned as "result".  Do not use a
-top-level "return" — it is a syntax error.  Anything you print() is captured
-and returned as "stdout", so print() is a fine way to inspect state.
+Every call uses a fresh Python namespace. Variables do not persist between
+calls, so each snippet must import and reacquire everything it needs. QGIS
+project state does persist, and layers can be reacquired through QgsProject.
+
+If the last statement is a bare expression, that expression's value is returned
+as "result". Do not use a top-level "return" — it is a syntax error. Anything
+you print() is captured and returned as "stdout", so print() is a fine way to
+inspect state.
 
     layer = QgsProject.instance().mapLayersByName("roads")[0]
     layer.featureCount()          # ← this becomes "result"
@@ -172,6 +195,9 @@ plus:
 The code runs on the QGIS main thread and blocks the UI while it does, so
 keep snippets bounded; do not start long loops or wait on input.
 
+Execution is not transactional. If a snippet changes the project and later
+raises an exception, changes made before the exception remain in QGIS.
+
 Returns this structured payload directly:
 
 On success:
@@ -179,8 +205,8 @@ On success:
 When the value is not JSON-encodable (e.g. a QgsVectorLayer), "result" is
 null and "result_repr" holds its repr() instead.
 
-When your code raises, the call still succeeds at the transport level and
-the payload carries the failure — retry against it:
+When your code raises, the MCP result is marked as an error and the structured
+payload carries the failure and traceback — retry against it:
     {"success": false, "error": …, "traceback": …,
      "stdout": …, "stderr": …}
 "stdout" holds whatever was printed before the exception.
@@ -194,7 +220,12 @@ delete layers and data.`,
 
 const server = new McpServer(
   { name: "qgis-mcp", version: pkg.version },
-  { instructions: "QGIS integration through the Model Context Protocol" }
+  {
+    instructions:
+      "WAI QGIS MCP controls the currently running QGIS session. Start with " +
+      "qgis_get_project for project context, use dedicated read-only tools for " +
+      "inspection, and use self-contained qgis_execute_code snippets for changes.",
+  }
 );
 
 for (const tool of TOOLS) {
@@ -219,7 +250,9 @@ for (const tool of TOOLS) {
           structuredContent: { result: metadata },
         };
       }
+      const isExecutionError = tool.command === "execute_code" && result?.success === false;
       return {
+        ...(isExecutionError ? { isError: true } : {}),
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: { result },
       };

@@ -1,6 +1,6 @@
 {
   "name": "qgis-mcp",
-  "description": "MCP integration for QGIS: control a running QGIS instance from Claude.",
+  "description": "WAI QGIS MCP integration: control a running QGIS instance from Claude.",
   "owner": {
     "name": "John Wiseman",
     "email": "jjwiseman@gmail.com"
@@ -9,7 +9,7 @@
     {
       "name": "qgis-mcp",
       "source": "./",
-      "description": "Control QGIS from Claude: load projects, manage layers, run processing algorithms, render maps, and execute PyQGIS code."
+      "description": "Control QGIS from Claude: inspect projects, manage layers, run processing algorithms, render maps, and execute PyQGIS code."
     }
   ]
 }

@@ -15,7 +15,7 @@ function delay(ms) {
 export function encodeFrame(value) {
   const payload = Buffer.from(JSON.stringify(value), "utf8");
   if (payload.length > MAX_MESSAGE_BYTES) {
-    throw new Error(`QGIS MCP message is too large (${payload.length} bytes)`);
+    throw new Error(`WAI QGIS MCP message is too large (${payload.length} bytes)`);
   }
   const header = Buffer.allocUnsafe(4);
   header.writeUInt32BE(payload.length);
@@ -72,7 +72,7 @@ export class QgisClient {
     const detail = lastError?.code ? `${lastError.code}: ${lastError.message}` : lastError?.message;
     throw new Error(
       `Could not connect to QGIS at ${this.host}:${this.port}${detail ? ` (${detail})` : ""}. ` +
-      "Open Plugins -> QGIS MCP -> QGIS MCP, then start the server."
+      "Open Plugins -> WAI QGIS MCP -> WAI QGIS MCP, then start the server."
     );
   }
 
@@ -117,13 +117,13 @@ export class QgisClient {
       }
       if (info.protocol_version !== PROTOCOL_VERSION) {
         throw new CompatibilityError(
-          `QGIS MCP protocol mismatch: server uses ${PROTOCOL_VERSION}, plugin uses ${info.protocol_version ?? "unknown"}. ` +
+          `WAI QGIS MCP protocol mismatch: server uses ${PROTOCOL_VERSION}, plugin uses ${info.protocol_version ?? "unknown"}. ` +
           "Update the QGIS plugin and MCP server together."
         );
       }
       if (info.plugin_version !== this.version) {
         throw new CompatibilityError(
-          `QGIS MCP version mismatch: server is ${this.version}, plugin is ${info.plugin_version ?? "unknown"}. ` +
+          `WAI QGIS MCP version mismatch: server is ${this.version}, plugin is ${info.plugin_version ?? "unknown"}. ` +
           "Update the QGIS plugin and MCP server together."
         );
       }

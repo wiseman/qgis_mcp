@@ -8,6 +8,7 @@ import json
 import math
 import socket
 import struct
+import time
 import traceback
 import sys
 from qgis.core import *
@@ -50,8 +51,10 @@ except AttributeError:
 
 try:
     _MESSAGE_CRITICAL = Qgis.MessageLevel.Critical
+    _MESSAGE_INFO = Qgis.MessageLevel.Info
 except AttributeError:
     _MESSAGE_CRITICAL = Qgis.Critical
+    _MESSAGE_INFO = Qgis.Info
 
 try:
     _MAP_ANTIALIASING = Qgis.MapSettingsFlag.Antialiasing
@@ -77,6 +80,7 @@ def _plugin_version():
 
 
 _PLUGIN_VERSION = _plugin_version()
+_BRAND_NAME = "WAI QGIS MCP"
 
 # Sentinel: the snippet ended in a statement, so there is no value at all
 # (distinct from a final expression that evaluated to None).
@@ -90,12 +94,15 @@ def _truncate(text, limit=_MAX_OUTPUT_CHARS):
     return text[:limit] + f"\n... [truncated, {len(text)} chars total]"
 
 
-# Simple helper to write debug lines to stderr so they appear in QGIS console
 def _dbg(msg: str):
-    pass
-    # Write message to /Users/wisej041/qgis_mcp.log
-    # with open("/Users/wisej041/qgis_mcp.log", "a") as f:
-    #     f.write(f"{msg}\n")
+    """Write privacy-safe diagnostics to the QGIS log when opted in."""
+    try:
+        enabled = QgsSettings().value("qgis_mcp/diagnostics", False, type=bool)
+        if enabled:
+            QgsMessageLog.logMessage(str(msg), _BRAND_NAME, _MESSAGE_INFO)
+    except Exception:
+        # Diagnostics must never interfere with command processing.
+        pass
 
 class QgisMCPServer(QObject):
     """Server class to handle socket connections and execute QGIS commands"""
@@ -133,11 +140,15 @@ class QgisMCPServer(QObject):
             self.timer.timeout.connect(self.process_server)
             self.timer.start(25)
             
-            _dbg("QGIS MCP server started and listening")
+            _dbg("Server started and listening")
             return True
         except Exception as e:
             self.last_error = str(e)
-            QgsMessageLog.logMessage(f"Failed to start server: {self.last_error}", "QGIS MCP", _MESSAGE_CRITICAL)
+            QgsMessageLog.logMessage(
+                f"Failed to start server: {self.last_error}",
+                _BRAND_NAME,
+                _MESSAGE_CRITICAL,
+            )
             self.stop()
             return False
             
@@ -164,7 +175,7 @@ class QgisMCPServer(QObject):
             
         self.socket = None
         self.client_count_changed.emit(0)
-        _dbg("QGIS MCP server stopped")
+        _dbg("Server stopped")
     
     def process_server(self):
         """Process server operations (called by timer)
@@ -190,7 +201,7 @@ class QgisMCPServer(QObject):
                 client.setblocking(False)
                 self.clients[client] = {"rx": b"", "tx": bytearray()}
                 self.client_count_changed.emit(len(self.clients))
-                _dbg(f"Accepted connection from {address}; active clients = {len(self.clients)}")
+                _dbg(f"Client connected; active clients = {len(self.clients)}")
             except BlockingIOError:
                 break  # No more queued connections
             except Exception as e:
@@ -260,13 +271,14 @@ class QgisMCPServer(QObject):
         try:
             cmd_type = command.get("type")
             params = command.get("params", {})
-            _dbg(f"execute_command: type={cmd_type} params={params}")
+            started = time.monotonic()
+            _dbg(f"Command started: {cmd_type}")
             
             # "ping" is kept for socket-level liveness checks even though the
-            # MCP server exposes no ping tool; everything else project- or
-            # layer-related happens through execute_code.
+            # MCP server exposes no public ping tool.
             handlers = {
                 "ping": self.ping,
+                "get_project": self.get_project,
                 "execute_code": self.execute_code,
                 "get_layers": self.get_layers,
                 "get_layer_features": self.get_layer_features,
@@ -276,20 +288,32 @@ class QgisMCPServer(QObject):
             handler = handlers.get(cmd_type)
             if handler:
                 try:
-                    _dbg(f"Executing handler for {cmd_type}")
                     result = handler(**params)
-                    _dbg("Handler execution complete")
+                    elapsed_ms = (time.monotonic() - started) * 1000
+                    if (
+                        cmd_type == "execute_code"
+                        and isinstance(result, dict)
+                        and result.get("success") is False
+                    ):
+                        _dbg(
+                            f"Command failed: {cmd_type} ({elapsed_ms:.1f} ms): "
+                            f"{result.get('error', 'execution error')}"
+                        )
+                    else:
+                        _dbg(f"Command completed: {cmd_type} ({elapsed_ms:.1f} ms)")
                     return {"status": "success", "result": result}
                 except Exception as e:
-                    _dbg(f"Error in handler: {str(e)}")
-                    traceback.print_exc()
+                    elapsed_ms = (time.monotonic() - started) * 1000
+                    _dbg(
+                        f"Command failed: {cmd_type} ({elapsed_ms:.1f} ms): "
+                        f"{type(e).__name__}: {e}"
+                    )
                     return {"status": "error", "message": str(e)}
             else:
                 return {"status": "error", "message": f"Unknown command type: {cmd_type}"}
                 
         except Exception as e:
             _dbg(f"Error executing command: {str(e)}")
-            traceback.print_exc()
             return {"status": "error", "message": str(e)}
     
     # Command handlers
@@ -299,6 +323,50 @@ class QgisMCPServer(QObject):
             "pong": True,
             "protocol_version": _PROTOCOL_VERSION,
             "plugin_version": _PLUGIN_VERSION,
+        }
+
+    def get_project(self, **kwargs):
+        """Return bounded metadata about the current project and map canvas."""
+        project = QgsProject.instance()
+        root = project.layerTreeRoot()
+        canvas = self.iface.mapCanvas()
+        extent = canvas.extent()
+        active_layer = self.iface.activeLayer()
+        layers = list(project.mapLayers().values())
+        visible_layer_count = 0
+        for layer in layers:
+            node = root.findLayer(layer.id())
+            if node is not None and node.isVisible():
+                visible_layer_count += 1
+
+        return {
+            "file_name": project.fileName(),
+            "title": project.title(),
+            "dirty": project.isDirty(),
+            "home_path": project.homePath(),
+            "crs": project.crs().authid(),
+            "layer_count": len(layers),
+            "visible_layer_count": visible_layer_count,
+            "active_layer": (
+                {"id": active_layer.id(), "name": active_layer.name()}
+                if active_layer is not None
+                else None
+            ),
+            "canvas": {
+                "crs": canvas.mapSettings().destinationCrs().authid(),
+                "extent": {
+                    "xmin": extent.xMinimum(),
+                    "ymin": extent.yMinimum(),
+                    "xmax": extent.xMaximum(),
+                    "ymax": extent.yMaximum(),
+                },
+                "scale": canvas.scale(),
+                "rotation": canvas.rotation(),
+            },
+            "integration": {
+                "plugin_version": _PLUGIN_VERSION,
+                "protocol_version": _PROTOCOL_VERSION,
+            },
         }
     
     def _get_layer_type(self, layer):
@@ -336,11 +404,12 @@ class QgisMCPServer(QObject):
         return namespace
 
     def execute_code(self, code, **kwargs):
-        """Execute arbitrary PyQGIS code, notebook-style.
+        """Execute arbitrary PyQGIS code with a trailing-expression result.
 
         The snippet is executed as-is.  If its final statement is a bare
         expression, that expression is evaluated and its value becomes the
-        ``result`` — the same semantics as a Jupyter cell::
+        ``result``. Every call receives a fresh namespace; variables do not
+        persist between calls::
 
             layer = QgsProject.instance().mapLayersByName("roads")[0]
             layer.featureCount()
@@ -485,23 +554,20 @@ class QgisMCPServer(QObject):
     def get_layer_features(self, layer_id, limit=10, **kwargs):
         """Get features from a vector layer"""
         project = QgsProject.instance()
-        _dbg(f"get_layer_features: layer_id={layer_id}, limit={limit}")
+        _dbg(f"Reading up to {limit} features from a vector layer")
         if layer_id in project.mapLayers():
             layer = project.mapLayer(layer_id)
             
             if layer.type() != _LAYER_VECTOR:
                 raise Exception(f"Layer is not a vector layer: {layer_id}")
-            _dbg(f"got layer: {layer}")
             features = []
             for i, feature in enumerate(layer.getFeatures()):
                 if i >= limit:
                     break
-                _dbg(f"* got feature {i}: {feature}")
                 # Extract attributes
                 attrs = {}
                 for field in layer.fields():
                     attrs[str(field.name())] = str(feature.attribute(field.name()))
-                _dbg(f"* got attrs: {attrs}")
                 # Extract geometry – full geometry for points, else centroid & bbox
                 geom = None
                 if feature.hasGeometry():
@@ -530,14 +596,12 @@ class QgisMCPServer(QObject):
                     except Exception as e:
                         # Fallback – return geometry as string to avoid breaking the whole call
                         geom = {"error": f"Geometry processing error: {str(e)}"}
-                _dbg(f"* got geom: {geom}")
                 features.append({
                     "id": feature.id(),
                     "attributes": attrs,
                     "geometry": geom
                 })
             
-            _dbg("returning features")
             return {
                 "layer_id": layer_id,
                 "feature_count": layer.featureCount(),
@@ -682,12 +746,12 @@ class QgisMCPServer(QObject):
 
 
 class QgisMCPDockWidget(QDockWidget):
-    """Dock widget for the QGIS MCP plugin"""
+    """Dock widget for the WAI QGIS MCP plugin"""
     closed = pyqtSignal()
     server_status_changed = pyqtSignal(bool, int, int)
     
     def __init__(self, iface):
-        super().__init__("QGIS MCP")
+        super().__init__(_BRAND_NAME)
         self.iface = iface
         self.server = None
         self.setup_ui()
@@ -726,6 +790,13 @@ class QgisMCPDockWidget(QDockWidget):
         )
         layout.addWidget(self.autostart_check)
 
+        self.diagnostics_check = QCheckBox("Log diagnostics to the QGIS Message Log")
+        self.diagnostics_check.setChecked(
+            settings.value("qgis_mcp/diagnostics", False, type=bool)
+        )
+        self.diagnostics_check.toggled.connect(self._set_diagnostics)
+        layout.addWidget(self.diagnostics_check)
+
         # Add status label
         self.status_label = QLabel("Server: Stopped")
         layout.addWidget(self.status_label)
@@ -752,9 +823,15 @@ class QgisMCPDockWidget(QDockWidget):
                 f"Server: Failed to start on port {self.server.port}: {self.server.last_error}"
             )
             self.iface.messageBar().pushCritical(
-                "QGIS MCP",
+                _BRAND_NAME,
                 f"Could not start on port {self.server.port}: {self.server.last_error}",
             )
+
+    def _set_diagnostics(self, enabled):
+        """Persist diagnostic logging without recording command payloads."""
+        QgsSettings().setValue("qgis_mcp/diagnostics", enabled)
+        if enabled:
+            _dbg("Diagnostics enabled")
     
     def stop_server(self):
         """Stop the server"""
@@ -786,7 +863,7 @@ class QgisMCPDockWidget(QDockWidget):
 
 
 class QgisMCPPlugin:
-    """Main plugin class for QGIS MCP"""
+    """Main plugin class for WAI QGIS MCP"""
     
     def __init__(self, iface):
         self.iface = iface
@@ -797,15 +874,15 @@ class QgisMCPPlugin:
         """Initialize GUI"""
         # Create action
         self.action = QAction(
-            "QGIS MCP",
+            _BRAND_NAME,
             self.iface.mainWindow()
         )
         self.action.setCheckable(True)
-        self.action.setToolTip("QGIS MCP server stopped")
+        self.action.setToolTip(f"{_BRAND_NAME} server stopped")
         self.action.triggered.connect(self.toggle_dock)
         
         # Add to plugins menu and toolbar
-        self.iface.addPluginToMenu("QGIS MCP", self.action)
+        self.iface.addPluginToMenu(_BRAND_NAME, self.action)
         self.iface.addToolBarIcon(self.action)
 
         # Auto-start the server if the user enabled it in the dock widget.
@@ -824,9 +901,9 @@ class QgisMCPPlugin:
         settings.setValue("qgis_mcp/first_run_complete", True)
         QMessageBox.information(
             self.iface.mainWindow(),
-            "QGIS MCP installed",
-            "QGIS MCP is ready.\n\n"
-            "1. Open Plugins -> QGIS MCP -> QGIS MCP.\n"
+            f"{_BRAND_NAME} installed",
+            f"{_BRAND_NAME} is ready.\n\n"
+            f"1. Open Plugins -> {_BRAND_NAME} -> {_BRAND_NAME}.\n"
             "2. Click Start Server.\n"
             "3. Enable automatic startup if you want QGIS to reconnect next time.\n"
             "4. Configure your MCP client using the project README.\n\n"
@@ -846,10 +923,10 @@ class QgisMCPPlugin:
         if running:
             noun = "client" if client_count == 1 else "clients"
             self.action.setToolTip(
-                f"QGIS MCP running on port {port} — {client_count} {noun} connected"
+                f"{_BRAND_NAME} running on port {port} — {client_count} {noun} connected"
             )
         else:
-            self.action.setToolTip("QGIS MCP server stopped")
+            self.action.setToolTip(f"{_BRAND_NAME} server stopped")
 
     def toggle_dock(self, checked):
         """Toggle the dock widget"""
@@ -874,7 +951,7 @@ class QgisMCPPlugin:
             self.dock_widget = None
             
         # Remove plugin menu item and toolbar icon
-        self.iface.removePluginMenu("QGIS MCP", self.action)
+        self.iface.removePluginMenu(_BRAND_NAME, self.action)
         self.iface.removeToolBarIcon(self.action)
 
 
