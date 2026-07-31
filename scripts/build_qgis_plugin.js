@@ -49,7 +49,15 @@ const centralParts = [];
 let offset = 0;
 const timestamp = dosTimestamp();
 
-for (const file of filesBelow(source)) {
+const files = [
+  ...filesBelow(source),
+  {
+    diskPath: path.join(repo, "LICENSE"),
+    archivePath: `${pluginId}/LICENSE`,
+  },
+];
+
+for (const file of files) {
   let data = readFileSync(file.diskPath);
   if (file.archivePath.endsWith("/metadata.txt")) {
     const text = data.toString("utf8").replace(/^version=.*$/m, `version=${pkg.version}`);

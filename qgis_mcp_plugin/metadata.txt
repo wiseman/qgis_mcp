@@ -1,7 +1,7 @@
 [general]
 name=WAI QGIS MCP
-description=Socket server that lets a trusted MCP client control QGIS
-about=This minimal-tool variant connects QGIS to trusted local AI assistants through the Model Context Protocol. It listens only on the local machine and supports project and layer management, Processing algorithms, map rendering, and PyQGIS code execution.
+description=Let trusted AI assistants inspect, map, and automate QGIS
+about=Connects QGIS to trusted local AI assistants through the Model Context Protocol. Requires the separately installed qgis-mcp server; see the homepage for setup. Unlike the existing QGIS MCP plugin, WAI QGIS MCP uses five broad tools and an npm-distributed server to keep setup and AI context overhead small. It listens only on the local machine and supports project and layer management, Processing algorithms, map rendering, and PyQGIS code execution.
 version=0.2.0
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
@@ -10,5 +10,5 @@ email=jjwiseman@gmail.com
 homepage=https://github.com/wiseman/qgis_mcp
 repository=https://github.com/wiseman/qgis_mcp
 tracker=https://github.com/wiseman/qgis_mcp/issues
-tags=mcp,ai,automation,claude
+tags=mcp,ai,automation,claude,codex
 experimental=True

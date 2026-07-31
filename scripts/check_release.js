@@ -40,7 +40,7 @@ for (const field of [
   if (!metadata[field]) errors.push(`qgis_mcp_plugin/metadata.txt is missing ${field}`);
 }
 
-for (const file of ["qgis_mcp_plugin/__init__.py", "qgis_mcp_plugin/qgis_mcp_plugin.py"]) {
+for (const file of ["LICENSE", "qgis_mcp_plugin/__init__.py", "qgis_mcp_plugin/qgis_mcp_plugin.py"]) {
   if (!existsSync(path.join(repo, file))) errors.push(`${file} is missing`);
 }
 
