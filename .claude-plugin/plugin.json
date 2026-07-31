@@ -2,7 +2,7 @@
   "name": "qgis-mcp",
   "displayName": "WAI QGIS MCP",
   "description": "Control QGIS from Claude: inspect projects, manage layers, run processing algorithms, render maps, and execute PyQGIS code.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": {
     "name": "John Wiseman",
     "email": "jjwiseman@gmail.com"

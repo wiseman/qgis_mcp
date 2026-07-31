@@ -102,7 +102,7 @@ def _dbg(msg: str):
             QgsMessageLog.logMessage(str(msg), _BRAND_NAME, _MESSAGE_INFO)
     except Exception:
         # Diagnostics must never interfere with command processing.
-        pass
+        return
 
 class QgisMCPServer(QObject):
     """Server class to handle socket connections and execute QGIS commands"""
@@ -169,8 +169,8 @@ class QgisMCPServer(QObject):
         for cli in list(self.clients.keys()):
             try:
                 cli.close()
-            except Exception:
-                pass
+            except Exception as e:
+                _dbg(f"Error closing client socket: {e}")
             self.clients.pop(cli, None)
             
         self.socket = None
@@ -447,10 +447,10 @@ class QgisMCPServer(QObject):
             with contextlib.redirect_stdout(stdout_capture), \
                     contextlib.redirect_stderr(stderr_capture):
                 if body:
-                    exec(compile(ast.Module(body=body, type_ignores=[]),
+                    exec(compile(ast.Module(body=body, type_ignores=[]),  # nosec B102
                                  _EXEC_FILENAME, "exec"), namespace)
                 if tail is not None:
-                    result = eval(compile(ast.Expression(body=tail.value),
+                    result = eval(compile(ast.Expression(body=tail.value),  # nosec B307
                                           _EXEC_FILENAME, "eval"), namespace)
         except SyntaxError as e:
             # No user frames ran; SyntaxError carries its own line/caret.
@@ -739,8 +739,8 @@ class QgisMCPServer(QObject):
         """Close and remove a client socket from the registry."""
         try:
             cli.close()
-        except Exception:
-            pass
+        except Exception as e:
+            _dbg(f"Error closing dropped client socket: {e}")
         self.clients.pop(cli, None)
         self.client_count_changed.emit(len(self.clients))
 

@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "qgis-mcp",
   "display_name": "WAI QGIS MCP",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Control QGIS from an AI assistant: inspect projects, manage layers, run processing algorithms, render maps, and execute PyQGIS code.",
   "long_description": "Connects an MCP client to a running QGIS instance through the WAI QGIS MCP plugin's socket server. Requires the WAI QGIS MCP plugin to be installed and started in QGIS (see https://github.com/wiseman/qgis_mcp). Everything else is bundled — no other software needed.",
   "author": {
