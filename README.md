@@ -14,11 +14,17 @@ You need to install the QGIS plugin and connect your AI assistant.
 
 ### 1. Install the QGIS plugin
 
-1. In QGIS, choose **Plugins → Manage and Install Plugins → Settings** and
-   enable **Show also Experimental Plugins**.
-2. Open **All**, search for **WAI QGIS MCP**, and click **Install Plugin**.
-3. Choose **Plugins → WAI QGIS MCP → WAI QGIS MCP**.
-4. Click **Start Server** and enable **Start server automatically when QGIS
+The plugin is awaiting publication in the QGIS plugin repository. Until it is
+available there, install the release ZIP directly:
+
+1. Open the [latest GitHub release](https://github.com/wiseman/qgis_mcp/releases/latest)
+   and download `qgis-mcp-plugin-<version>.zip`. Do not extract it or download
+   GitHub's similarly named **Source code (zip)** archive.
+2. In QGIS, choose **Plugins → Manage and Install Plugins → Install from ZIP**.
+3. Select the downloaded ZIP, click **Install Plugin**, and accept the security
+   prompt if QGIS displays one.
+4. Choose **Plugins → WAI QGIS MCP → WAI QGIS MCP**.
+5. Click **Start Server** and enable **Start server automatically when QGIS
    opens**.
 
 The plugin supports QGIS 3.28 and later.
