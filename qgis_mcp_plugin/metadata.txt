@@ -1,7 +1,7 @@
 [general]
 name=WAI QGIS MCP
 description=Let trusted AI assistants inspect, map, and automate QGIS
-about=Connects QGIS to trusted local AI assistants through the Model Context Protocol. Requires the separately installed qgis-mcp server; see the homepage for setup. Unlike the existing QGIS MCP plugin, WAI QGIS MCP uses five broad tools and an npm-distributed server to keep setup and AI context overhead small. It listens only on the local machine and supports project and layer management, Processing algorithms, map rendering, and PyQGIS code execution.
+about=WAI QGIS MCP lets trusted AI assistants inspect projects, manage layers, run Processing algorithms, render maps, and execute PyQGIS code. Setup: open Plugins > WAI QGIS MCP and click Start Server. For Codex or the ChatGPT desktop app, install Node.js 18 or later, run "codex mcp add qgis -- npx -y qgis-mcp" in a terminal, then restart the assistant. For Claude Desktop, download the MCPB asset from the latest GitHub release and install it from Settings > Extensions > Advanced settings > Install Extension. For Claude Code, install Node.js 18 or later, run "/plugin marketplace add wiseman/qgis_mcp" followed by "/plugin install qgis-mcp@qgis-mcp", then run "/reload-plugins". Keep QGIS running while using the assistant. Only connect assistants you trust. See the homepage for complete setup and troubleshooting.
 version=0.2.1
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
