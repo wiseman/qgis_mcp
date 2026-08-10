@@ -1,6 +1,6 @@
 {
   "name": "qgis-mcp",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "MCP server that controls a running QGIS instance via the WAI QGIS MCP plugin",
   "type": "module",
   "license": "MIT",

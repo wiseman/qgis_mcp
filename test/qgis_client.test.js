@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import net from "node:net";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { encodeFrame, PROTOCOL_VERSION, QgisClient } from "../server/qgis_client.js";
 
-const TEST_VERSION = "0.2.1";
+const TEST_VERSION = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8")
+).version;
 
 async function fakeQgis({ pluginVersion = TEST_VERSION, onCommand } = {}) {
   const sockets = new Set();
@@ -69,7 +72,11 @@ test("rejects a mismatched plugin version with an actionable message", async () 
   try {
     await assert.rejects(
       client.send("echo"),
-      /version mismatch: server is 0\.2\.1, plugin is 9\.9\.9.*Update the QGIS plugin and MCP server together/s
+      new RegExp(
+        `version mismatch: server is ${TEST_VERSION.replaceAll(".", "\\.")}, ` +
+        "plugin is 9\\.9\\.9.*Update the QGIS plugin and MCP server together",
+        "s"
+      )
     );
   } finally {
     client.close();

@@ -2,7 +2,7 @@
 name=WAI QGIS MCP
 description=Let trusted AI assistants inspect, map, and automate QGIS
 about=WAI QGIS MCP lets trusted AI assistants inspect projects, manage layers, run Processing algorithms, render maps, and execute PyQGIS code. Setup: open Plugins > WAI QGIS MCP and click Start Server. For Codex or the ChatGPT desktop app, install Node.js 18 or later, run "codex mcp add qgis -- npx -y qgis-mcp" in a terminal, then restart the assistant. For Claude Desktop, download the MCPB asset from the latest GitHub release and install it from Settings > Extensions > Advanced settings > Install Extension. For Claude Code, install Node.js 18 or later, run "/plugin marketplace add wiseman/qgis_mcp" followed by "/plugin install qgis-mcp@qgis-mcp", then run "/reload-plugins". Keep QGIS running while using the assistant. Only connect assistants you trust. See the homepage for complete setup and troubleshooting.
-version=0.2.1
+version=0.2.2
 qgisMinimumVersion=3.28
 qgisMaximumVersion=4.99
 author=John Wiseman
@@ -12,4 +12,4 @@ repository=https://github.com/wiseman/qgis_mcp
 tracker=https://github.com/wiseman/qgis_mcp/issues
 tags=mcp,ai,automation,claude,codex
 experimental=True
-changelog=0.2.1 - Address QGIS marketplace security scan findings and add marketplace packaging.
+changelog=0.2.2 - Fix non-spatial layer inspection and map rendering fidelity; add Codex, ChatGPT, and Claude connection instructions.
