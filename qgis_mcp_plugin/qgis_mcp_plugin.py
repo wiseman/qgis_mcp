@@ -41,36 +41,23 @@ try:
     _LAYER_VECTOR = Qgis.LayerType.Vector
     _LAYER_RASTER = Qgis.LayerType.Raster
 except AttributeError:
-    _LAYER_VECTOR = QgsMapLayer.VectorLayer
-    _LAYER_RASTER = QgsMapLayer.RasterLayer
+    _LAYER_VECTOR = QgsMapLayer.LayerType.VectorLayer
+    _LAYER_RASTER = QgsMapLayer.LayerType.RasterLayer
 
 try:
     _GEOMETRY_POINT = Qgis.GeometryType.Point
 except AttributeError:
-    _GEOMETRY_POINT = QgsWkbTypes.PointGeometry
+    _GEOMETRY_POINT = QgsWkbTypes.GeometryType.PointGeometry
 
-try:
-    _MESSAGE_CRITICAL = Qgis.MessageLevel.Critical
-    _MESSAGE_INFO = Qgis.MessageLevel.Info
-except AttributeError:
-    _MESSAGE_CRITICAL = Qgis.Critical
-    _MESSAGE_INFO = Qgis.Info
+_MESSAGE_CRITICAL = Qgis.MessageLevel.Critical
+_MESSAGE_INFO = Qgis.MessageLevel.Info
 
-try:
-    _MAP_ANTIALIASING = Qgis.MapSettingsFlag.Antialiasing
-    _MAP_DRAW_LABELING = Qgis.MapSettingsFlag.DrawLabeling
-    _MAP_ADVANCED_EFFECTS = Qgis.MapSettingsFlag.UseAdvancedEffects
-except AttributeError:
-    _MAP_ANTIALIASING = QgsMapSettings.Antialiasing
-    _MAP_DRAW_LABELING = QgsMapSettings.DrawLabeling
-    _MAP_ADVANCED_EFFECTS = QgsMapSettings.UseAdvancedEffects
+_MAP_ANTIALIASING = Qgis.MapSettingsFlag.Antialiasing
+_MAP_DRAW_LABELING = Qgis.MapSettingsFlag.DrawLabeling
+_MAP_ADVANCED_EFFECTS = Qgis.MapSettingsFlag.UseAdvancedEffects
 
-try:
-    _RIGHT_DOCK_AREA = Qt.DockWidgetArea.RightDockWidgetArea
-    _ISO_DATE = Qt.DateFormat.ISODate
-except AttributeError:
-    _RIGHT_DOCK_AREA = Qt.RightDockWidgetArea
-    _ISO_DATE = Qt.ISODate
+_RIGHT_DOCK_AREA = Qt.DockWidgetArea.RightDockWidgetArea
+_ISO_DATE = Qt.DateFormat.ISODate
 
 
 def _plugin_version():
@@ -688,11 +675,7 @@ class QgisMCPServer(QObject):
 
             encoded = QByteArray()
             buffer = QBuffer(encoded)
-            write_only = (
-                QIODevice.WriteOnly
-                if hasattr(QIODevice, "WriteOnly")
-                else QIODevice.OpenModeFlag.WriteOnly
-            )
+            write_only = QIODevice.OpenModeFlag.WriteOnly
             if not buffer.open(write_only) or not img.save(buffer, "PNG"):
                 raise Exception("Failed to encode rendered image as PNG")
             buffer.close()
