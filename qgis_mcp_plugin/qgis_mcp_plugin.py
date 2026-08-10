@@ -517,8 +517,9 @@ class QgisMCPServer(QObject):
         • width / height – raster-specific metadata
         """
         project = QgsProject.instance()
+        root = project.layerTreeRoot()
         layers = []
-        
+
         for layer_id, layer in project.mapLayers().items():
             # Safely extract attribute field names only for vector layers
             if layer.type() == _LAYER_VECTOR:
@@ -526,12 +527,17 @@ class QgisMCPServer(QObject):
             else:
                 field_names = []
 
+            # Layers registered without a layer-tree node (non-spatial
+            # attribute tables, anything added with addToLegend=False) have no
+            # node to ask; they are never drawn, so report them as hidden.
+            node = root.findLayer(layer_id)
+
             layer_info = {
                 "id": layer_id,
                 "name": layer.name(),
                 "type": self._get_layer_type(layer),
                 "fields": field_names,
-                "visible": project.layerTreeRoot().findLayer(layer_id).isVisible(),
+                "visible": node.isVisible() if node is not None else False,
                 "crs": layer.crs().authid() if hasattr(layer, "crs") else None,
             }
             
@@ -622,9 +628,11 @@ class QgisMCPServer(QObject):
             project = QgsProject.instance()
             root = project.layerTreeRoot()
 
-            # --- 1) Build layer list in DRAW ORDER (bottom→top), respecting visibility ---
-            # QGIS draws layers in the order provided; we want the project's layer-tree order.
-            ordered_layers = list(root.layerOrder())  # returns [QgsMapLayer, ...] bottom→top
+            # --- 1) Build layer list in DRAW ORDER, respecting visibility ---
+            # Both layerOrder() and QgsMapSettings.setLayers() are top-first
+            # (index 0 is drawn on top), so the list passes straight through.
+            # layerOrder() also honours a custom layer order when one is set.
+            ordered_layers = list(root.layerOrder())  # [QgsMapLayer, ...] top→bottom
             if not include_hidden:
                 visible_ids = {n.layerId() for n in root.findLayers() if n.isVisible()}
                 ordered_layers = [lyr for lyr in ordered_layers if lyr and lyr.id() in visible_ids]
@@ -635,16 +643,24 @@ class QgisMCPServer(QObject):
                 raise Exception("No drawable layers (after visibility/order filtering).")
 
             # --- 2) Mirror canvas/map settings so reprojection & styles match what you see ---
+            # Cloning carries canvas state a fresh QgsMapSettings would lose:
+            # rotation, temporal range, map-theme style overrides and labeling
+            # engine settings. Fall back to copying the essentials by hand if
+            # the copy constructor is unavailable.
             canvas_ms = self.iface.mapCanvas().mapSettings()
+            try:
+                ms = QgsMapSettings(canvas_ms)
+            except TypeError:
+                ms = QgsMapSettings()
+                ms.setDestinationCrs(canvas_ms.destinationCrs())
+                ms.setOutputDpi(canvas_ms.outputDpi())
+                ms.setRotation(canvas_ms.rotation())
 
-            ms = QgsMapSettings()
             ms.setLayers(ordered_layers)
             ms.setExtent(self.iface.mapCanvas().extent())  # current view
             ms.setOutputSize(QSize(width, height))
             ms.setBackgroundColor(QColor(0, 0, 0, 0) if transparent else QColor(255, 255, 255))
-            ms.setOutputDpi(canvas_ms.outputDpi())
             ms.setTransformContext(project.transformContext())
-            ms.setDestinationCrs(canvas_ms.destinationCrs())
             ms.setFlag(_MAP_ANTIALIASING, True)
             ms.setFlag(_MAP_DRAW_LABELING, True)  # labels, if any
             ms.setFlag(_MAP_ADVANCED_EFFECTS, True)  # blend modes, layer opacity, etc.
